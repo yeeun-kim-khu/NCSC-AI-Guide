@@ -6,4 +6,4 @@ langgraph>=0.0.20
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 tzdata>=2023.3
-chromadb>=0.4.0
+chromadb>=0.4.22
