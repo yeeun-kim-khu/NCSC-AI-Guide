@@ -11,25 +11,25 @@ def initialize_vector_db():
     collection_name = "csc_exhibits"
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
     
-    # 이미 저장된 벡터 DB가 있으면 로드 (API 호출 없음)
-    if os.path.exists(persist_directory):
+    try:
+        # 먼저 기존 컬렉션을 로드 시도
         vectorstore = Chroma(
             persist_directory=persist_directory,
             collection_name=collection_name,
             embedding_function=embeddings
         )
         return vectorstore
-    
-    # 없으면 새로 생성 (최초 1회만 API 호출)
-    docs = []
-    for name, desc in STATIC_EXHIBIT_INFO.items():
-        url = CSC_URLS.get(name, CSC_URLS["홈페이지"])
-        docs.append(Document(page_content=f"[{name}] {desc}", metadata={"source": url}))
-    
-    vectorstore = Chroma.from_documents(
-        docs, 
-        embeddings,
-        persist_directory=persist_directory,
-        collection_name=collection_name
-    )
-    return vectorstore
+    except Exception:
+        # 컬렉션이 없으면 새로 생성
+        docs = []
+        for name, desc in STATIC_EXHIBIT_INFO.items():
+            url = CSC_URLS.get(name, CSC_URLS["홈페이지"])
+            docs.append(Document(page_content=f"[{name}] {desc}", metadata={"source": url}))
+        
+        vectorstore = Chroma.from_documents(
+            docs, 
+            embeddings,
+            persist_directory=persist_directory,
+            collection_name=collection_name
+        )
+        return vectorstore

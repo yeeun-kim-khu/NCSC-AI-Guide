@@ -454,3 +454,4 @@ STATIC_EXHIBIT_INFO = {
 - **임베딩**: OpenAI Embeddings
 - **크롤링**: requests, BeautifulSoup4
 - **언어**: Python 3.13
+"# 260406" 
