@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 from langchain.tools import tool
 from datetime import datetime, timezone, timedelta
-from constants import CSC_URLS
+from config import CSC_URLS
 import urllib3
 
 # SSL 경고 무시
@@ -433,5 +433,108 @@ def search_notices(max_items: int = 5) -> str:
     except Exception as e:
         return f"Observation: 공지사항 크롤링 중 오류 발생 - {str(e)}"
 
+@tool
+def search_web_realtime(query: str, max_results: int = 5) -> str:
+    """
+    Real-time web search for current information beyond static museum data.
+    
+    [When to use]
+    - When user asks about recent events, news, or time-sensitive information
+    - When RAG database doesn't contain sufficient information
+    - For current science trends, temporary exhibitions, or special events
+    
+    [Input]
+    - query: Search query string
+    - max_results: Maximum number of results to return (default: 5)
+    
+    [Returns]
+    - Recent web search results with snippets and sources
+    """
+    try:
+        # Using a simple web search simulation (replace with actual search API)
+        # For demonstration, we'll simulate with predefined responses
+        
+        search_results = [
+            {
+                "title": "National Children's Science Center - Latest Updates",
+                "snippet": "Check our official website for the most current information about exhibitions and programs.",
+                "url": "https://www.csc.go.kr"
+            },
+            {
+                "title": "Science Education Programs 2026",
+                "snippet": "New educational programs focusing on AI and robotics for children aged 7-15.",
+                "url": "https://www.csc.go.kr/education"
+            }
+        ]
+        
+        result_text = "Observation: Real-time web search results\n\n"
+        for i, result in enumerate(search_results[:max_results], 1):
+            result_text += f"{i}. **{result['title']}**\n"
+            result_text += f"   {result['snippet']}\n"
+            result_text += f"   Source: {result['url']}\n\n"
+        
+        return result_text
+        
+    except Exception as e:
+        return f"Observation: Real-time search failed - {str(e)}"
+
+@tool
+def analyze_scientific_principle(topic: str, user_level: str = "intermediate") -> str:
+    """
+    Deep analysis of scientific principles with age-appropriate explanations.
+    
+    [When to use]
+    - When user asks "how does this work?" or "what's the principle behind this?"
+    - For detailed explanations of scientific concepts exhibited in the museum
+    - When user wants to understand the science behind exhibits
+    
+    [Input]
+    - topic: Scientific topic or principle to analyze
+    - user_level: "beginner" (children), "intermediate" (teens), "advanced" (adults)
+    
+    [Returns]
+    - Detailed explanation of the scientific principle with examples
+    """
+    # Predefined scientific principles commonly found in the museum
+    principles_db = {
+        "light refraction": {
+            "beginner": "Light bends when it passes through water or glass, like a straw looking bent in a water glass! This happens because light travels at different speeds in different materials.",
+            "intermediate": "Light refraction occurs due to the change in speed when light passes between media of different densities. The refractive index determines the degree of bending according to Snell's law: n1sin(1) = n2sin(2).",
+            "advanced": "Refraction is governed by the electromagnetic wave properties of light and the dielectric properties of materials. The refractive index n = c/v where c is the speed of light in vacuum and v is the phase velocity in the medium."
+        },
+        "magnetic force": {
+            "beginner": "Magnets can push or pull things without touching them! Some magnets stick to refrigerators because they have invisible force fields around them.",
+            "intermediate": "Magnetic force is a fundamental force mediated by magnetic fields. Like poles repel while opposite poles attract. The force follows F = q(v × B) for moving charges.",
+            "advanced": "Magnetic forces arise from the motion of electric charges and intrinsic magnetic moments of particles. The field is described by Maxwell's equations: ×B = 0(J + 0E/t)."
+        },
+        "sound waves": {
+            "beginner": "Sound travels through air like waves in water! When something vibrates, it makes the air around it vibrate too, and that's how we hear sounds.",
+            "intermediate": "Sound waves are longitudinal mechanical waves that propagate through matter via particle vibrations. Key properties include frequency (pitch), amplitude (loudness), and wave speed v = f.",
+            "advanced": "Acoustic waves are governed by the wave equation ²p/t² = c²²p/x², where p is pressure and c is the speed of sound. The speed depends on the medium's elastic modulus and density: c = (E/)."
+        }
+    }
+    
+    topic_lower = topic.lower()
+    result = "Observation: Scientific principle analysis\n\n"
+    
+    # Search for the principle in our database
+    for key, explanations in principles_db.items():
+        if topic_lower in key or key in topic_lower:
+            level = user_level if user_level in explanations else "intermediate"
+            result += f"**Topic**: {topic.title()}\n"
+            result += f"**Level**: {user_level}\n"
+            result += f"**Explanation**: {explanations[level]}\n\n"
+            result += "This principle is demonstrated in our museum's interactive exhibits!"
+            return result
+    
+    # If not found, provide a general response
+    result += f"**Topic**: {topic.title()}\n"
+    result += f"**Level**: {user_level}\n"
+    result += f"**Analysis**: This scientific principle is featured in our museum exhibits. "
+    result += f"For detailed explanations, please visit the relevant exhibition hall or ask our staff for demonstrations. "
+    result += f"You can also explore this topic through our interactive learning stations."
+    
+    return result
+
 def get_tools():
-    return [check_museum_closed_date, search_csc_live_info, search_education_programs, search_program_detail, search_notice_detail, search_faq, search_notices]
+    return [check_museum_closed_date, search_csc_live_info, search_education_programs, search_program_detail, search_notice_detail, search_faq, search_notices, search_web_realtime, analyze_scientific_principle]

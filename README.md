@@ -454,5 +454,19 @@ STATIC_EXHIBIT_INFO = {
 - **임베딩**: OpenAI Embeddings
 - **크롤링**: requests, BeautifulSoup4
 - **언어**: Python 3.13
-"# 260406" 
-"# 260406" 
+  "# LLM-based Active Scientific Principle Exploration
+
+## Overview
+
+This project implements an AI-powered guide for the National Children's Science Center (CSC) using an LLM-based active scientific principle exploration architecture. The system provides intelligent, context-aware responses to visitor queries through a sophisticated Thought-Action-Observation workflow.
+
+> **Project Purpose**: Hybrid architecture combining rule-based system and LLM for science museum guidance chatbot  
+> **Key Contribution**: Pain Point-based design + Hallucination prevention guardrails + Child safety enhancement"
+> "# LLM-based Active Scientific Principle Exploration
+
+## Overview
+
+This project implements an AI-powered guide for the National Children's Science Center (CSC) using an LLM-based active scientific principle exploration architecture. The system provides intelligent, context-aware responses to visitor queries through a sophisticated Thought-Action-Observation workflow.
+
+> **Project Purpose**: Hybrid architecture combining rule-based system and LLM for science museum guidance chatbot  
+> **Key Contribution**: Pain Point-based design + Hallucination prevention guardrails + Child safety enhancement"

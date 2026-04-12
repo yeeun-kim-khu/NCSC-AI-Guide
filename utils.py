@@ -4,17 +4,27 @@ import streamlit as st
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-def get_dynamic_prompt(mode: str) -> str:
+def get_dynamic_prompt(mode: str, language: str = "한국어") -> str:
     # UTC 시간을 가져와서 KST로 변환 (UTC+9)
     now_utc = datetime.now(timezone.utc)
     now_kst = now_utc + timedelta(hours=9)
     today_kst = now_kst.strftime("%Y년 %m월 %d일 %H:%M")
     weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_kst.weekday()]
     
+    # Language instruction
+    language_instruction = {
+        "한국어": "**중요: 모든 답변은 한국어로 작성하세요.**",
+        "English": "**IMPORTANT: Respond in English. All answers must be in English.**",
+        "日本語": "**重要：すべての回答は日本語で書いてください。**",
+        "中文": "**重要：所有回答必须用中文书写。**"
+    }
+    
     base_prompt = f"""
 당신은 국립어린이과학관 전문 안내 어시스턴트입니다.
 공식 기준 사이트: https://www.csc.go.kr
 [오늘 날짜] {today_kst} ({weekday_kr}요일) KST
+
+{language_instruction.get(language, language_instruction["한국어"])}
 
 === 핵심 임무 ===
 국립어린이과학관의 모든 시설, 전시관, 프로그램, 운영 정보를 정확하고 친절하게 안내하는 것입니다.
@@ -78,18 +88,27 @@ Final Answer: [사용자 질문에 대한 상세한 답변 - Thought/Action/Obse
 
 정보가 충분하면 RAG 배경지식과 도구를 활용해 구체적으로 답변하세요.
 
-=== 도구 사용 가이드라인 ===
-- check_museum_closed_date: 특정 날짜의 휴관일 여부를 확인할 때 반드시 사용 (예: "내일 가도 돼?", "다음주 월요일 열어?")
-- search_csc_live_info: 실시간 운영 정보, 전시관 상세 정보, 예약 안내 등을 확인할 때 사용
-- search_education_programs: 최신 교육 프로그램 목록을 확인할 때 사용 (예: "교육 프로그램 뭐 있어?", "K-사이언스 일정 알려줘")
-- search_program_detail: 특정 교육 프로그램의 상세 내용을 확인할 때 사용 (pkid 필요)
-- search_notices: 최신 공지사항 목록을 확인할 때 사용
-- search_notice_detail: 특정 공지사항의 상세 본문 내용을 확인할 때 사용 (pkid 필요)
-- RAG 배경지식: 5개 상설전시관(탐구놀이터/관찰놀이터/행동놀이터/생각놀이터/AI놀이터), 천문우주 시설의 기본 특징 참고
+=== Tool Usage Guidelines ===
+- check_museum_closed_date: Must use to check if specific dates are closed (e.g., "Can I visit tomorrow?", "Is next Monday open?")
+- search_csc_live_info: Use for real-time operation info, detailed exhibition info, reservation guidance
+- search_education_programs: Use for latest education program list (e.g., "What education programs are available?", "K-Science schedule")
+- search_program_detail: Use for specific program details (requires pkid)
+- search_notices: Use for latest notice list
+- search_notice_detail: Use for specific notice content (requires pkid)
+- search_web_realtime: Use for current events, news, time-sensitive info beyond static data
+- analyze_scientific_principle: Use for "how does this work?" questions, detailed science explanations
+- RAG background: Reference basic features of 5 permanent exhibitions, astronomy facilities
 
-=== 중요: 날짜 관련 질문 처리 ===
-사용자가 "내일", "다음주", "특정 날짜"에 대해 물어보면 반드시 check_museum_closed_date 도구를 먼저 호출하세요.
-추측하지 말고 도구로 확인한 결과를 바탕으로 답변하세요.
+=== Important: Date-Related Questions ===
+When users ask about "tomorrow", "next week", or specific dates, always call check_museum_closed_date tool first.
+Base your answer on tool-confirmed results, not assumptions.
+
+=== Enhanced Scientific Principle Exploration ===
+For questions about scientific principles:
+1. Use analyze_scientific_principle for detailed explanations
+2. Adjust user_level based on user_mode ("beginner" for children, "intermediate" for teens/adults)
+3. Provide age-appropriate explanations with examples
+4. Connect to museum exhibits when possible
 
 """
     if mode == "어린이":

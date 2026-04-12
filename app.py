@@ -11,10 +11,15 @@ from rules import route_intent, answer_rule_based
 from utils import get_dynamic_prompt, render_source_buttons
 from rag import initialize_vector_db
 
-# FAISS 벡터 DB는 앱 실행 시 한 번만 로드되도록 캐싱
+# Optimized RAG loading with progress indication
 @st.cache_resource
 def load_rag_db():
-    return initialize_vector_db()
+    """Load RAG database with caching"""
+    with st.spinner("RAG database loading..."):
+        from rag import initialize_vector_db
+        vector_db = initialize_vector_db()
+        st.success("RAG database ready!")
+    return vector_db
 
 def main():
     st.set_page_config(page_title="국립어린이과학관 AI 가이드", page_icon="🐣", layout="centered")
@@ -27,7 +32,21 @@ def main():
 
     with st.sidebar:
         st.title("⚙️ 안내 모드")
-        user_mode = st.radio(["어린이", "청소년/성인"], index=1)
+        user_mode = st.selectbox("사용자 모드 선택:", options=["어린이", "청소년/성인"], index=1)
+        
+        # Language mode selection
+        language_mode = st.selectbox(
+            "언어 모드 선택:",
+            options=["한국어", "English", "日本語", "中文"],
+            format_func=lambda x: {
+                "한국어": "한국어",
+                "English": "English", 
+                "日本語": "日本語",
+                "中文": "中文"
+            }[x],
+            index=0
+        )
+        
         if st.button("대화 새로고침 🔄"):
             st.session_state.messages = []
             st.session_state.thread_id = uuid.uuid4().hex
@@ -35,6 +54,11 @@ def main():
             st.rerun()
 
     st.title("국립어린이과학관 AI 가이드🤖")
+    
+    # Architecture Overview Section
+    with st.expander("LLM-based Active Scientific Principle Exploration Architecture", expanded=False):
+        st.markdown("Architecture visualization temporarily disabled due to graphviz dependency.")
+        st.markdown("Key components working: LLM Agent, RAG System, Real-time Tools")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -62,6 +86,27 @@ def main():
                 st.markdown(msg["content"])
 
     user_input = st.chat_input("질문을 입력해주세요!")
+    
+    # Recommended Questions
+    if not st.session_state.messages:
+        st.markdown("### 💡 추천 질문")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🔬 과학 원리", key="science"):
+                user_input = "빛이 굽는 원리가 궁금해요!"
+        with col2:
+            if st.button("🏛️ 전시관 안내", key="exhibit"):
+                user_input = "탐구놀이터에서 뭐 할 수 있어요?"
+        with col3:
+            if st.button("📅 운영 정보", key="info"):
+                user_input = "내일 가도 돼요?"
+    
+    # Process Flow Visualization
+    if st.session_state.messages and any(msg.get("role") == "debug" for msg in st.session_state.messages[-3:]):
+        # with st.expander("🔄 현재 처리 과정", expanded=False):
+        #     render_process_flow()
+        pass
     
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
