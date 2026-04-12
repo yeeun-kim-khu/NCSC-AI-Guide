@@ -8,19 +8,16 @@ from langgraph.checkpoint.memory import MemorySaver
 from audio_recorder_streamlit import audio_recorder
 import base64
 
-from tools import get_tools
-from config import route_intent, answer_rule_based
-from utils import get_dynamic_prompt, render_source_buttons
-from rag import initialize_vector_db
+from core import get_tools, route_intent, answer_rule_based, get_dynamic_prompt, render_source_buttons, initialize_vector_db
 from voice import speech_to_text, text_to_speech, get_language_code, autoplay_audio
-from post_visit_learning import render_post_visit_learning
+from learning import render_post_visit_learning
 
 # Optimized RAG loading with progress indication
 @st.cache_resource
 def load_rag_db():
     """Load RAG database with caching"""
     with st.spinner("RAG database loading..."):
-        from rag import initialize_vector_db
+        from core import initialize_vector_db
         vector_db = initialize_vector_db()
         st.success("RAG database ready!")
     return vector_db
