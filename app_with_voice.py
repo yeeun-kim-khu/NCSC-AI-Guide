@@ -818,12 +818,12 @@ def main():
     
     # Notify users to switch to guide tab when sidebar FAQ buttons are clicked
     # Only switch when both flags are set (ensures it only triggers from sidebar buttons)
-    if st.session_state.get("switch_to_guide_tab") and st.session_state.get("pending_user_input"):
+    if st.session_state.get("active_tab") != "guide" and st.session_state.get("pending_user_input"):
         try:
-            st.toast("과학관 안내 탭에서 답변을 확인하세요!", icon="🔔")
+            st.toast("과학관 안내 탭에서 답변을 확인하세요!", icon="")
         except Exception:
             pass
-        if st.session_state.get("switch_to_guide_tab"):
+        try:
             st.markdown("""
             <script>
                 (function() {
@@ -839,6 +839,8 @@ def main():
                 del st.session_state["switch_to_guide_tab"]
             except Exception:
                 pass
+        except Exception:
+            pass
         try:
             del st.session_state["pending_user_input"]
         except Exception:

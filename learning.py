@@ -367,6 +367,7 @@ def _render_keyword_tags(zone_name: str, keyword_pairs, zone_rows, language_mode
             btn_type = "primary" if is_selected else "secondary"
             if st.button(kw_disp, key=f"kw_btn_{zone_name}_{mode}_{kw_kr}", type=btn_type):
                 st.session_state[state_key] = kw_kr
+                st.rerun()
 
     selected_kw = st.session_state.get(state_key, "")
     selected_disp = selected_kw
@@ -1354,7 +1355,7 @@ def text_to_audiobook(story_text, language="한국어", voice_override=None, spe
     if (not eleven_key) and hasattr(st, "secrets"):
         eleven_key = _safe_secret_get("ELEVENLABS_API_KEY", "")
 
-    eleven_voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
+    eleven_voice_id = voice_override or os.environ.get("ELEVENLABS_VOICE_ID")
     if (not eleven_voice_id) and hasattr(st, "secrets"):
         eleven_voice_id = _safe_secret_get("ELEVENLABS_VOICE_ID", "")
     if not eleven_voice_id:
@@ -1745,6 +1746,18 @@ def render_post_visit_learning(
             llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
             for zone in selected_zones:
                 zone_rows = all_zone_rows.get(zone, [])
+                
+                # CSV 데이터가 없으면 직접 다시 로드
+                if not zone_rows:
+                    try:
+                        from core import load_zone_rows_from_csv
+                        zone_rows = load_zone_rows_from_csv(zone)
+                        # all_zone_rows 업데이트
+                        all_zone_rows[zone] = zone_rows
+                    except Exception as e:
+                        print(f"CSV 직접 로드 오류: {e}")
+                        zone_rows = []
+                
                 selected_kw, selected_disp = _render_zone_header(zone, zone_rows, mode="quiz", llm=llm)
 
                 if selected_kw:
@@ -1830,6 +1843,7 @@ def render_post_visit_learning(
             st.info(text["pick_zone_hint"])
 
     elif st.session_state.learning_sub_tab == "question":
+        # 전시관 선택 기능 복구
         selected_zones = _render_zone_selector("question")
 
         if selected_zones:
@@ -1837,38 +1851,51 @@ def render_post_visit_learning(
             llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
             for zone in selected_zones:
                 zone_rows = all_zone_rows.get(zone, [])
-                _render_zone_header(zone, zone_rows, mode="question", llm=llm)
+                
+                # CSV 데이터가 없으면 직접 다시 로드
+                if not zone_rows:
+                    try:
+                        from core import load_zone_rows_from_csv
+                        zone_rows = load_zone_rows_from_csv(zone)
+                        all_zone_rows[zone] = zone_rows
+                    except Exception as e:
+                        print(f"CSV 직접 로드 오류: {e}")
+                        zone_rows = []
+                
+                st.markdown(f"#### 🎯 {_display_zone_name(zone)}")
+                
+                # 질문 입력
+                user_question = st.text_input(
+                    f"{_display_zone_name(zone)}에 대해 질문하세요",
+                    key=f"question_input_{zone}"
+                )
 
-                with st.spinner(text["generating"]):
-                    exhibits = get_zone_exhibits_from_rag(zone, vector_db)
-
-                if exhibits:
-                    user_question = st.text_input(
-                        f"{_display_zone_name(zone)}{text['question_prompt']}",
-                        key=f"question_input_{zone}"
-                    )
-
-                    if st.button(text["ask_question"], key=f"question_btn_{zone}") and user_question:
-                        _queue_ga_event("question_asked", {"zone": zone, "language": language_mode})
-                        context_parts = []
-                        for ex in exhibits[:5]:
-                            c = ex.get("content", "")
-                            d = ex.get("metadata", {}).get("detail", "")
-                            if c:
-                                context_parts.append(c)
-                            if d and str(d).strip() and str(d).strip().lower() != "nan":
-                                context_parts.append(f"[세부 설명] {d}")
-                        context = "\n\n".join(context_parts)
-                        if not context.strip():
-                            st.warning(text.get("exhibits_not_found", "전시물 정보를 불러올 수 없습니다."))
-                            continue
+                if user_question:
+                    _queue_ga_event("question_asked", {"zone": zone, "language": language_mode})
+                    
+                    # 전시물 정보 컨텍스트 구성
+                    context_parts = []
+                    for r in zone_rows[:10]:
+                        title = r.get("title", "")
+                        content = r.get("content", "")
+                        detail = r.get("detail", "")
+                        if title and content:
+                            context_parts.append(f"[{title}] {content}")
+                            if detail and str(detail).strip() and str(detail).strip().lower() != "nan":
+                                context_parts.append(f"[세부 설명] {detail}")
+                    
+                    context = "\n\n".join(context_parts)
+                    if not context.strip():
+                        st.warning(text.get("exhibits_not_found", "전시물 정보를 불러올 수 없습니다."))
+                    else:
+                        # 언어별 답변 지시
                         lang_instruction = {
                             "한국어": "어린이가 이해하기 쉽게 한국어로 답변해주세요.",
                             "English": "Please answer in English, in a way that children can easily understand.",
                             "日本語": "子どもにもわかりやすい日本語で答えてください。",
                             "中文": "请用中文回答，让孩子容易理解。",
                         }.get(language_mode, "어린이가 이해하기 쉽게 답변해주세요.")
-                        prompt = f"""다음은 '{zone}'의 전시물 정보입니다:
+                        prompt = f"""다음은 {_display_zone_name(zone)}의 전시물 정보입니다:
 {context}
 
 사용자 질문: {user_question}
@@ -1880,8 +1907,6 @@ def render_post_visit_learning(
                         except Exception as e:
                             print(f"학습 질문 답변 오류: {e}")
                             st.error(text.get("answer_error", "답변 생성 중 오류가 발생했습니다. 다시 시도해주세요."))
-                else:
-                    st.warning(f"{_display_zone_name(zone)}{text['exhibits_not_found']}")
         else:
             st.info(text["pick_zone_hint"])
     
@@ -1991,9 +2016,14 @@ def render_post_visit_learning(
             if st.button(text["to_audiobook"]):
                 _queue_ga_event("audiobook_converted", {"language": language_mode})
                 with st.spinner(text["audiobook_generating"]):
+                    # 사용자가 설정한 음성 아이디가 있으면 전달
+                    custom_voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
+                    if (not custom_voice_id) and hasattr(st, "secrets"):
+                        custom_voice_id = _safe_secret_get("ELEVENLABS_VOICE_ID", "")
                     audio_bytes = text_to_audiobook(
                         st.session_state[story_state_key],
                         language_mode,
+                        voice_override=custom_voice_id,
                     )
                     if audio_bytes:
                         st.session_state[audio_state_key] = audio_bytes
