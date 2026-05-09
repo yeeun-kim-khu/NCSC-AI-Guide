@@ -47,8 +47,7 @@ def speech_to_text(audio_bytes):
         with open(temp_audio_path, "rb") as audio_file:
             transcript = _get_openai_client().audio.transcriptions.create(
                 model="whisper-1",
-                file=audio_file,
-                language="ko"  # Korean language
+                file=audio_file
             )
         
         # Clean up temp file
@@ -68,11 +67,17 @@ def text_to_speech(text, language="ko"):
         eleven_key = _safe_secret_get("ELEVENLABS_API_KEY", "")
 
     if eleven_key:
+        voice_map = {
+            "ko": "uyVNoMrnUku1dZyVEXwD",
+            "en": "8LVfoRdkh4zgjr8v5ObE",
+            "ja": "3JDquces8E8bkmvbh6Bc",
+            "zh": "vZZLclMx4wouUtKBRfZn",
+        }
         eleven_voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
         if (not eleven_voice_id) and hasattr(st, "secrets"):
             eleven_voice_id = _safe_secret_get("ELEVENLABS_VOICE_ID", "")
         if not eleven_voice_id:
-            eleven_voice_id = "21m00Tcm4TlvDq8ikWAM"
+            eleven_voice_id = voice_map.get(language, "uyVNoMrnUku1dZyVEXwD")
 
         eleven_model_id = os.environ.get("ELEVENLABS_MODEL_ID")
         if (not eleven_model_id) and hasattr(st, "secrets"):
@@ -136,11 +141,17 @@ def get_tts_cache_namespace(language: str = "ko") -> str:
         eleven_key = _safe_secret_get("ELEVENLABS_API_KEY", "")
 
     if eleven_key:
+        voice_map = {
+            "ko": "uyVNoMrnUku1dZyVEXwD",
+            "en": "8LVfoRdkh4zgjr8v5ObE",
+            "ja": "3JDquces8E8bkmvbh6Bc",
+            "zh": "vZZLclMx4wouUtKBRfZn",
+        }
         eleven_voice_id = os.environ.get("ELEVENLABS_VOICE_ID")
         if (not eleven_voice_id) and hasattr(st, "secrets"):
             eleven_voice_id = _safe_secret_get("ELEVENLABS_VOICE_ID", "")
         if not eleven_voice_id:
-            eleven_voice_id = "21m00Tcm4TlvDq8ikWAM"
+            eleven_voice_id = voice_map.get(language, "uyVNoMrnUku1dZyVEXwD")
 
         eleven_model_id = os.environ.get("ELEVENLABS_MODEL_ID")
         if (not eleven_model_id) and hasattr(st, "secrets"):
@@ -197,12 +208,17 @@ def preprocess_tts_text(text: str, language: str = "ko") -> str:
         return f"{h}시 {m}분"
 
     def _repl(match: re.Match) -> str:
-        h1, m1 = match.group(1), match.group(2)
-        h2, m2 = match.group(3), match.group(4)
+        # match.groups() 로 안전하게 추출 (그룹 수가 다른 두 패턴에서 공용 사용)
+        groups = match.groups()
+        h1 = groups[0] if len(groups) > 0 else None
+        m1 = groups[1] if len(groups) > 1 else None
+        h2 = groups[2] if len(groups) > 2 else None
+        m2 = groups[3] if len(groups) > 3 else None
         if h2 and m2:
             return f"{_format_time(h1, m1)}부터 {_format_time(h2, m2)}까지"
         return _format_time(h1, m1)
 
-    text = re.sub(r"\b(\d{1,2})\s*:\s*(\d{2})\s*[~∼-]\s*(\d{1,2})\s*:\s*(\d{2})\b", _repl, text)
+    # 범위 패턴(09:00~18:00) 먼저 처리 → 단일 패턴(11:40)
+    text = re.sub(r"\b(\d{1,2})\s*:\s*(\d{2})\s*[~∼\-–—]\s*(\d{1,2})\s*:\s*(\d{2})\b", _repl, text)
     text = re.sub(r"\b(\d{1,2})\s*:\s*(\d{2})\b", _repl, text)
     return text

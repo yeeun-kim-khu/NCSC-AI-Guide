@@ -9,13 +9,26 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 from audio_recorder_streamlit import audio_recorder
 import base64
+import json
+import time
+from datetime import datetime, timezone, timedelta
 
-from core import get_tools, route_intent, answer_rule_based, get_dynamic_prompt, render_source_buttons, initialize_vector_db, CSC_URLS
+from core import get_tools, route_intent, answer_rule_based, answer_rule_based_localized, get_dynamic_prompt, render_source_buttons, initialize_vector_db, CSC_URLS, translate_answer_cached
 from voice import speech_to_text, text_to_speech, get_language_code, autoplay_audio, get_tts_cache_namespace
-from learning import render_post_visit_learning
+from learning import render_post_visit_learning, _backtranslate_to_korean_cached
+
+# Google Form URLs for feedback per language
+# Tip: You can either create separate forms per language, or use one form with Google Forms' built-in translation.
+# To get a link: Open your Google Form → Send → copy the "Link" tab URL
+GOOGLE_FORM_URLS = {
+    "한국어": "https://forms.gle/UvRfnMEwjUEZgFJJ8",
+    "English": "https://forms.gle/UvRfnMEwjUEZgFJJ8",
+    "日本語": "https://forms.gle/UvRfnMEwjUEZgFJJ8",
+    "中文": "https://forms.gle/UvRfnMEwjUEZgFJJ8",
+}
 
 # Optimized RAG loading with progress indication
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def load_rag_db():
     """Load RAG database with caching"""
     with st.spinner("RAG database loading..."):
@@ -24,8 +37,267 @@ def load_rag_db():
         st.success("RAG database ready!")
     return vector_db
 
+
+# ---- Google Analytics 4 (privacy-preserving) ----
+GA_MEASUREMENT_ID = "G-7VS14G0T7P"
+
+
+def _init_google_analytics() -> None:
+    """Initialize GA4 once per session with de-identification settings."""
+    if st.session_state.get("_ga_initialized"):
+        return
+    ga_script = f"""
+    <script async src="https://www.googletagmanager.com/gtag/js?id={GA_MEASUREMENT_ID}"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){{dataLayer.push(arguments);}}
+      gtag('js', new Date());
+      gtag('config', '{GA_MEASUREMENT_ID}', {{
+        'anonymize_ip': true,
+        'allow_google_signals': false,
+        'allow_ad_personalization_signals': false,
+        'restricted_data_processing': true,
+        'send_page_view': true,
+        'transport_type': 'beacon'
+      }});
+    </script>
+    """
+    st.markdown(ga_script, unsafe_allow_html=True)
+    st.session_state._ga_initialized = True
+
+
+def _track_ga_event(event_name: str, params: dict | None = None) -> None:
+    """Send a privacy-safe custom event to GA4. No PII or chat content."""
+    safe_params = dict(params or {})
+    for key in list(safe_params.keys()):
+        if key.lower() in ("user_id", "email", "name", "content", "message", "query"):
+            del safe_params[key]
+    params_json = json.dumps(safe_params, ensure_ascii=False)
+    script = f"""
+    <script>
+      if (typeof gtag !== 'undefined') {{
+        gtag('event', '{event_name}', {params_json});
+      }}
+    </script>
+    """
+    st.markdown(script, unsafe_allow_html=True)
+
+
+def _queue_ga_event(event_name: str, params: dict | None = None) -> None:
+    """Queue a GA event to be sent on the next render (safe before st.rerun)."""
+    if "_ga_event_queue" not in st.session_state:
+        st.session_state._ga_event_queue = []
+    st.session_state._ga_event_queue.append({"name": event_name, "params": dict(params or {})})
+
+
+def _flush_ga_events() -> None:
+    """Send all queued GA events. Call at the top of main()."""
+    events = st.session_state.get("_ga_event_queue", [])
+    for ev in events:
+        _track_ga_event(ev["name"], ev["params"])
+    st.session_state._ga_event_queue = []
+
+
+def _render_mascot_animation() -> None:
+    """어린이 모드용 마스코트를 본문 글자 뒤 워터마크 배경으로 렌더링.
+
+    - 파일: assets/NCSC_character.png
+    - 효과: 화면 중앙에 고정된 반투명 배경 (스크롤해도 따라옴)
+    - 가독성을 위해 OPACITY는 0.22 권장 (0.6~0.7은 글자 읽기 어려움)
+    """
+    from pathlib import Path
+    # 워터마크 불투명도 — 글자 가독성과 캐릭터 존재감 사이 균형
+    # 살짝 더 진하게: 0.30 / 더 옅게: 0.15 / 클로드 추천 0.22 
+    OPACITY = 0.15
+    SIZE_VMIN = 80  # 화면 짧은 변의 80% 크기 (클로드 추천 60%)
+
+    mascot_path = Path(__file__).parent / "assets" / "NCSC_character.png"
+    if not mascot_path.exists():
+        return
+    try:
+        b64 = base64.b64encode(mascot_path.read_bytes()).decode("ascii")
+    except Exception:
+        return
+    html = f"""
+    <style>
+      @keyframes ncsc-mascot-bg-float {{
+        0%   {{ transform: translate(-50%, -50%) translateY(0px); }}
+        50%  {{ transform: translate(-50%, -50%) translateY(-12px); }}
+        100% {{ transform: translate(-50%, -50%) translateY(0px); }}
+      }}
+      .ncsc-mascot-bg {{
+        position: fixed;
+        top: 55%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: {SIZE_VMIN}vmin;
+        height: {SIZE_VMIN}vmin;
+        max-width: 600px;
+        max-height: 600px;
+        background-image: url("data:image/png;base64,{b64}");
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        opacity: {OPACITY};
+        pointer-events: none;
+        z-index: 0;
+        animation: ncsc-mascot-bg-float 5s ease-in-out infinite;
+      }}
+      /* 본문이 워터마크 위에 오도록 */
+      [data-testid="stAppViewContainer"] .main .block-container {{
+        position: relative;
+        z-index: 1;
+      }}
+    </style>
+    <div class="ncsc-mascot-bg" aria-hidden="true"></div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _render_privacy_notice_gate() -> None:
+    """첫 진입 시 개인정보 처리 안내 팝업.
+
+    - 세션당 1회만 표시 (확인 누르면 다시 안 뜸)
+    - 동의 전에는 본문 렌더링 차단 (st.stop)
+    - st.dialog 사용 (Streamlit 1.31+); 미지원 환경에서는 본문 상단 배너로 폴백
+    """
+    if st.session_state.get("privacy_notice_acknowledged"):
+        return
+
+    notice_md = """
+서비스 이용 전 안내드립니다! 꼭 확인해주세요.
+
+**✔️ 입력하신 내용 활용**
+- 적어주신 글·말하신 음성은 **답변을 만들 때만 잠깐** 사용되고, **답변이 끝나면 바로 사라져요.**
+- 저희 서버·관리자가 그 내용을 **따로 저장하거나 보관하지 않습니다.**
+- 화면에 보이는 대화 내용도 **페이지를 새로고침하면 모두 지워져요.**
+
+**🙅 입력 자제 권장**
+- 정확한 집 주소·전화번호·주민번호 등 **민감한 개인정보는 입력하지 마세요.**
+- 길찾기는 "○○역 근처", "○○동" 정도로 충분히 안내됩니다.
+
+**👶 어린이 관람객에게**
+- 어린이 친구들은 **성인 보호자와 함께** 이용해 주세요.
+- 음성 기능 사용 전 보호자 동의를 권장합니다.
+
+확인 후 서비스를 이용해 주세요.
+"""
+
+    def _ack() -> None:
+        st.session_state["privacy_notice_acknowledged"] = True
+        _queue_ga_event("privacy_consent", {"language": st.session_state.get("language_mode", "한국어")})
+        st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog("이용 안내", width="large")
+        def _privacy_dialog():
+            st.markdown(notice_md)
+            if st.button("확인하고 시작하기 ✨", type="primary", use_container_width=True):
+                _ack()
+
+        _privacy_dialog()
+        st.stop()
+    else:
+        st.warning(notice_md)
+        if st.button("확인하고 시작하기 ✨", type="primary"):
+            _ack()
+        st.stop()
+
+
+def save_feedback(data: dict, language_mode: str, user_mode: str):
+    kst = datetime.now(timezone.utc) + timedelta(hours=9)
+    data["timestamp"] = kst.isoformat()
+    data["language"] = language_mode
+    data["mode"] = user_mode
+    data["msg_count"] = len(st.session_state.get("messages", []))
+    print(f"[FEEDBACK] {json.dumps(data, ensure_ascii=False)}")
+    # Google Sheets 연동 (선택사항 — 아래 가이드 참고)
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        sheet_id = st.secrets.get("app", {}).get("feedback_sheet_id")
+        if sheet_id:
+            creds = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=["https://www.googleapis.com/auth/spreadsheets"],
+            )
+            gc = gspread.authorize(creds)
+            sheet = gc.open_by_key(sheet_id).worksheet("feedback")
+            row = [data.get("timestamp"), data.get("type"), data.get("language"), data.get("mode"), data.get("msg_count"), json.dumps(data, ensure_ascii=False)]
+            sheet.append_row(row)
+    except Exception:
+        pass
+
+
+def log_monitoring(intent: str, rule_based: bool, latency_ms: float, error: bool = False):
+    """개발자용 모니터링 로그 (PII 없이 메타데이터만 기록)"""
+    print(f"[MONITOR] intent={intent} rule_based={rule_based} latency_ms={latency_ms:.0f} error={error}")
+
+
+GOOGLE_FORM_I18N = {
+    "한국어": {
+        "children_label": "💬 한마디 남기기 🎤",
+        "children_msg": "소중한 의견을 들려주세요",
+        "children_guardian": "* 어린이는 보호자와 함께 작성해 주세요",
+        "parent_label": "💬 서비스 만족도 남기기",
+        "parent_msg": "소중한 의견을 들려주세요",
+        "btn_text": "📄 설문조사 참여!",
+        "done_msg": "✅ 의견 감사합니다!",
+    },
+    "English": {
+        "children_label": "💬 Leave a message 🎤",
+        "children_msg": "We'd love to hear your thoughts",
+        "children_guardian": "* Children, please fill this out with your parent or guardian",
+        "parent_label": "💬 Service Feedback",
+        "parent_msg": "We'd love to hear your thoughts",
+        "btn_text": "📄 Take survey!",
+        "done_msg": "✅ Thank you for your feedback!",
+    },
+    "日本語": {
+        "children_label": "💬 メッセージを残す 🎤",
+        "children_msg": "貴重なご意見をお聞かせください",
+        "children_guardian": "* お子様は保護者の方と一緒にお書きください",
+        "parent_label": "💬 サービスフィードバック",
+        "parent_msg": "貴重なご意見をお聞かせください",
+        "btn_text": "📄 アンケートに参加!",
+        "done_msg": "✅ ご意見ありがとうございます!",
+    },
+    "中文": {
+        "children_label": "💬 留言 🎤",
+        "children_msg": "期待您的宝贵意见",
+        "children_guardian": "* 儿童请在家长陪同下填写",
+        "parent_label": "💬 服务反馈",
+        "parent_msg": "期待您的宝贵意见",
+        "btn_text": "📄 参与调查!",
+        "done_msg": "✅ 感谢您的反馈!",
+    },
+}
+
+
+def render_children_feedback(language_mode: str = "한국어", user_mode: str = "기본"):
+    ft = GOOGLE_FORM_I18N.get(language_mode, GOOGLE_FORM_I18N["한국어"])
+    st.caption(ft["children_msg"])
+    st.caption(f"\n{ft['children_guardian']}")
+    form_url = GOOGLE_FORM_URLS.get(language_mode, GOOGLE_FORM_URLS["한국어"])
+    st.link_button(ft["btn_text"], form_url, use_container_width=True, type="primary")
+
+
+def render_parent_feedback(language_mode: str = "한국어", user_mode: str = "기본"):
+    ft = GOOGLE_FORM_I18N.get(language_mode, GOOGLE_FORM_I18N["한국어"])
+    st.caption(ft["parent_msg"])
+    form_url = GOOGLE_FORM_URLS.get(language_mode, GOOGLE_FORM_URLS["한국어"])
+    st.link_button(ft["btn_text"], form_url, use_container_width=True, type="primary")
+
+
 def main():
     warnings.filterwarnings("ignore", message=r".*create_react_agent has been moved to `langchain\.agents`\..*")
+
+    # 첫 진입 시 개인정보 안내 팝업 (동의 전 본문 차단)
+    _render_privacy_notice_gate()
+
+    # Google Analytics 4 (비식별 설정)
+    _init_google_analytics()
+    _flush_ga_events()
 
     if "language_mode" not in st.session_state:
         st.session_state["language_mode"] = "한국어"
@@ -34,7 +306,7 @@ def main():
     ui_text = {
         "한국어": {
             "page_title": "국립어린이과학관 AI 가이드",
-            "app_title": "국립어린이과학관 AI 가이드🤖",
+            "app_title": "국립어린이과학관 AI 가이드",
             "sidebar_title": "⚙️ 안내 모드",
             "user_mode_label": "사용자 모드 선택:",
             "user_mode_child": "어린이",
@@ -45,12 +317,13 @@ def main():
             "voice_out": "음성 출력 활성화",
             "voice_ask": "### 🎤 음성으로 질문하기",
             "voice_rec_fail": "음성 인식에 실패했습니다. 다시 시도해주세요.",
-            "refresh": "대화 새로고침 🔄",
-            "faq_header": "#### ❓ 자주 묻는 질문",
-            "faq_floor": "🏢 층별 안내",
-            "faq_programs": "🎭 오늘의 프로그램",
-            "faq_route": "👶 연령별 동선",
-            "faq_exhibits": "🧩 전시관 안내",
+            "refresh": "🔄 대화 새로고침",
+            "refresh_hint": "사용 중 문제가 발생했다면?",
+            "faq_header": "### ❓ 자주 묻는 질문",
+            "faq_floor": "🏢 층별",
+            "faq_programs": "🎭 프로그램",
+            "faq_route": "👶 동선",
+            "faq_exhibits": "🧩 전시관",
             "quick_menu": "⚡ 빠른 메뉴(모바일 추천)",
             "quick_floor": "🏢 층별",
             "quick_route": "👶 동선",
@@ -80,7 +353,7 @@ def main():
         },
         "English": {
             "page_title": "NCSC AI Guide",
-            "app_title": "NCSC AI Guide 🤖",
+            "app_title": "NCSC AI Guide",
             "sidebar_title": "⚙️ Guide Mode",
             "user_mode_label": "Visitor type:",
             "user_mode_child": "Child",
@@ -91,11 +364,12 @@ def main():
             "voice_out": "Enable voice output",
             "voice_ask": "### 🎤 Ask by voice",
             "voice_rec_fail": "Voice recognition failed. Please try again.",
-            "refresh": "Reset chat 🔄",
-            "faq_header": "#### ❓ FAQ",
-            "faq_floor": "🏢 Floor guide",
-            "faq_programs": "🎭 Today's programs",
-            "faq_route": "👶 Recommended route",
+            "refresh": "🔄 Reset chat",
+            "refresh_hint": "Start a fresh conversation",
+            "faq_header": "### ❓ FAQ",
+            "faq_floor": "🏢 Floors",
+            "faq_programs": "🎭 Programs",
+            "faq_route": "👶 Route",
             "faq_exhibits": "🧩 Exhibits",
             "quick_menu": "⚡ Quick menu (mobile)",
             "quick_floor": "🏢 Floors",
@@ -125,8 +399,8 @@ def main():
             "debug_backtranslate": "Show back-translation (debug)",
         },
         "日本語": {
-            "page_title": "AIガイド",
-            "app_title": "AIガイド 🤖",
+            "page_title": "国立子ども科学館 AIガイド",
+            "app_title": "国立子ども科学館 AIガイド",
             "sidebar_title": "⚙️ ガイドモード",
             "user_mode_label": "来館者タイプ:",
             "user_mode_child": "こども",
@@ -137,12 +411,13 @@ def main():
             "voice_out": "音声出力を有効化",
             "voice_ask": "### 🎤 音声で質問",
             "voice_rec_fail": "音声認識に失敗しました。もう一度お試しください。",
-            "refresh": "会話をリセット 🔄",
-            "faq_header": "#### ❓ よくある質問",
-            "faq_floor": "🏢 フロア案内",
-            "faq_programs": "🎭 本日のプログラム",
-            "faq_route": "👶 おすすめ動線",
-            "faq_exhibits": "🧩 展示案内",
+            "refresh": "🔄 会話をリセット",
+            "refresh_hint": "最初からやり直す時",
+            "faq_header": "### ❓ よくある質問",
+            "faq_floor": "🏢 フロア",
+            "faq_programs": "🎭 プログラム",
+            "faq_route": "👶 動線",
+            "faq_exhibits": "🧩 展示",
             "quick_menu": "⚡ クイックメニュー(モバイル)",
             "quick_floor": "🏢 フロア",
             "quick_route": "👶 動線",
@@ -171,8 +446,8 @@ def main():
             "debug_backtranslate": "逆翻訳を表示（デバッグ）",
         },
         "中文": {
-            "page_title": "AI 导览",
-            "app_title": "AI 导览 🤖",
+            "page_title": "国立儿童科学馆 AI 导览",
+            "app_title": "国立儿童科学馆 AI 导览",
             "sidebar_title": "⚙️ 导览模式",
             "user_mode_label": "访客类型:",
             "user_mode_child": "儿童",
@@ -183,12 +458,13 @@ def main():
             "voice_out": "启用语音输出",
             "voice_ask": "### 🎤 语音提问",
             "voice_rec_fail": "语音识别失败，请重试。",
-            "refresh": "重置对话 🔄",
-            "faq_header": "#### ❓ 常见问题",
-            "faq_floor": "🏢 楼层导览",
-            "faq_programs": "🎭 今日节目",
-            "faq_route": "👶 推荐动线",
-            "faq_exhibits": "🧩 展馆导览",
+            "refresh": "🔄 重置对话",
+            "refresh_hint": "重新开始对话时",
+            "faq_header": "### ❓ 常见问题",
+            "faq_floor": "🏢 楼层",
+            "faq_programs": "🎭 节目",
+            "faq_route": "👶 动线",
+            "faq_exhibits": "🧩 展馆",
             "quick_menu": "⚡ 快捷菜单(移动端)",
             "quick_floor": "🏢 楼层",
             "quick_route": "👶 动线",
@@ -235,7 +511,7 @@ def main():
     vector_db = load_rag_db()
 
     with st.sidebar:
-        st.title(t("sidebar_title"))
+        st.subheader(t("sidebar_title"))
 
         user_mode_display = st.selectbox(
             t("user_mode_label"),
@@ -260,16 +536,19 @@ def main():
                 del st.session_state["tts_cache"]
             st.rerun()
         
-        # Voice features toggle
-        st.markdown("---")
-        st.markdown(f"#### {t('voice_section')}")
-        enable_voice_input = st.checkbox(t("voice_in"), value=True)
-        enable_voice_output = st.checkbox(t("voice_out"), value=True)
+        # 음성 기능은 항상 활성화 (사이드바 UI 단순화)
+        enable_voice_input = True
+        enable_voice_output = True
+
+        # 디버그 섹션 숨김 (출력만 비활성화, 변수는 False로 유지해 하위 코드 호환성 보장)
+        # st.markdown("---")
+        # st.subheader(t("debug_section"))
+        # debug_show_ko = st.checkbox(t("debug_show_ko"), value=False)
+        # debug_backtranslate = st.checkbox(t("debug_backtranslate"), value=False)
+        debug_show_ko = False
+        debug_backtranslate = False
 
         st.markdown("---")
-        st.markdown(f"#### {t('debug_section')}")
-        debug_show_ko = st.checkbox(t("debug_show_ko"), value=False)
-        debug_backtranslate = st.checkbox(t("debug_backtranslate"), value=False)
 
         auto_clear_on_change = True
 
@@ -287,24 +566,66 @@ def main():
         st.session_state["_prev_user_mode"] = user_mode
         st.session_state["_prev_language_mode"] = language_mode
 
-        st.markdown("---")
         st.markdown(ui_text.get(language_mode, ui_text["한국어"])["faq_header"])
         s1, s2 = st.columns(2)
+        # FAQ 질문 번역 매핑
+        faq_inputs = {
+            "한국어": {
+                "floor": "층별 안내",
+                "programs": "오늘의 프로그램",
+                "route": "연령별 맞춤 동선 추천",
+                "exhibits": "전시관 안내",
+            },
+            "English": {
+                "floor": "Floor guide",
+                "programs": "Today's programs",
+                "route": "Recommended route by age",
+                "exhibits": "Exhibition guide",
+            },
+            "日本語": {
+                "floor": "フロア案内",
+                "programs": "今日のプログラム",
+                "route": "年齢別おすすめルート",
+                "exhibits": "展示館案内",
+            },
+            "中文": {
+                "floor": "楼层导览",
+                "programs": "今日节目",
+                "route": "按年龄推荐路线",
+                "exhibits": "展馆导览",
+            },
+        }.get(language_mode, {
+            "floor": "층별 안내",
+            "programs": "오늘의 프로그램",
+            "route": "연령별 맞춤 동선 추천",
+            "exhibits": "전시관 안내",
+        })
+
         with s1:
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["faq_floor"], key="faq_floor_sidebar"):
-                st.session_state["pending_user_input"] = "층별 안내"
+                _queue_ga_event("faq_button_click", {"category": "floor", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["floor"]
+                st.session_state["switch_to_guide_tab"] = True
                 st.rerun()
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["faq_programs"], key="faq_programs_sidebar"):
-                st.session_state["pending_user_input"] = "오늘의 프로그램"
+                _queue_ga_event("faq_button_click", {"category": "programs", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["programs"]
                 st.session_state["pending_ui_program_buttons"] = True
+                st.session_state["switch_to_guide_tab"] = True
                 st.rerun()
         with s2:
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["faq_route"], key="faq_route_sidebar"):
-                st.session_state["pending_user_input"] = "연령별 맞춤 동선 추천"
+                _queue_ga_event("faq_button_click", {"category": "route", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["route"]
+                st.session_state["switch_to_guide_tab"] = True
                 st.rerun()
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["faq_exhibits"], key="faq_exhibits_sidebar"):
-                st.session_state["pending_user_input"] = "전시관 안내"
+                _queue_ga_event("faq_button_click", {"category": "exhibits", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["exhibits"]
+                st.session_state["switch_to_guide_tab"] = True
                 st.rerun()
+
+        st.markdown("---")
 
         if enable_voice_input:
             st.markdown(t("voice_ask"))
@@ -316,6 +637,10 @@ def main():
                 text=ui_text.get(language_mode, ui_text["한국어"])["record_start"],
                 recording_color="#e74c3c",
                 neutral_color="#3498db",
+                # 모바일에서 1초 컷 방지 (자세한 주석은 cloud-deployment 버전 참고)
+                pause_threshold=4.0,
+                energy_threshold=(-1.0, 1.0),
+                sample_rate=16000,
                 icon_name="microphone",
                 icon_size="2x",
                 key=st.session_state["audio_recorder_key"],
@@ -332,6 +657,7 @@ def main():
                     with st.spinner("음성을 텍스트로 변환 중..."):
                         recognized = speech_to_text(audio_bytes)
                         if recognized:
+                            _queue_ga_event("voice_input_used", {"language": language_mode})
                             st.session_state["pending_user_input"] = recognized
                             st.session_state["audio_recorder_key"] = uuid.uuid4().hex
                             st.rerun()
@@ -339,8 +665,12 @@ def main():
                             st.error(t("voice_rec_fail"))
                             st.session_state["audio_recorder_key"] = uuid.uuid4().hex
                             st.rerun()
-        
-        if st.button(t("refresh")):
+
+        st.markdown("---")
+        st.caption(t("refresh_hint"))
+
+        if st.button(t("refresh"), use_container_width=True, type="primary"):
+            _queue_ga_event("chat_reset", {"language": language_mode, "user_mode": user_mode})
             st.session_state.messages = []
             st.session_state.thread_id = uuid.uuid4().hex
             st.session_state.debug_logs = []
@@ -348,149 +678,103 @@ def main():
                 del st.session_state["tts_cache"]
             st.rerun()
 
+        if user_mode == "어린이":
+            render_children_feedback(language_mode, user_mode)
+        else:
+            render_parent_feedback(language_mode, user_mode)
+
     st.title(ui_text.get(st.session_state.get("language_mode"), ui_text["한국어"])["app_title"])
 
-    intro_text_map = {
-        "한국어": (
-            "과학이 기쁨이 되는 어린이과학관에 오신 여러분들 환영합니다!\n\n"
-            "저는 **국립어린이과학관 AI 가이드**예요. 어린이과학관에 대해서 궁금한 점이 있나요?\n"
-            "아래 채팅으로 질문하거나, 왼쪽 사이드바에서 **음성으로 질문**해도 좋아요.\n"
-            "필요하면 전시/프로그램/이용 안내까지 제가 차근차근 도와드릴게요~"
-        ),
-        "English": (
-            "Welcome to the National Children's Science Center!\n\n"
-            "I'm your **AI Guide**. Have any questions about exhibits, programs, or visiting tips?\n"
-            "Ask in the chat below, or use **voice input** from the left sidebar."
-        ),
-        "日本語": (
-            "国立こども科学館へようこそ！\n\n"
-            "私は **AIガイド** です。展示・プログラム・利用案内など、気になることはありますか？\n"
-            "下のチャット、または左のサイドバーの **音声入力** で質問できます。"
-        ),
-        "中文": (
-            "欢迎来到国立儿童科学馆！\n\n"
-            "我是你的 **AI 导览**。关于展览、节目或参观方式，有什么想了解的吗？\n"
-            "你可以在下方聊天提问，也可以在左侧栏使用 **语音提问**。"
-        ),
-    }
+    # 🎨 마스코트 워터마크 배경 (모든 모드에서 표시)
+    _render_mascot_animation()
+
     language_mode = st.session_state.get("language_mode", "한국어")
-    
-    # Enhanced app description
+
+    # 메인 화면 앱 소개 (탭 위에 표시) — 사용자 모드(어린이/청소년·성인)별로 톤 분기
     intro_enhanced = {
         "한국어": {
             "어린이": (
-                "안녕! 나는 **과학관 친구 AI**야! 🤖✨\n\n"
-                "과학관에서 신기한 걸 봤어? 궁금한 게 생겼어? 나한테 물어봐!\n\n"
-                "**🔍 나는 이런 걸 도와줄 수 있어:**\n"
-                "- 🎨 전시물이 어떻게 작동하는지 알려줘\n"
-                "- 🤔 '왜 그럴까?' 하는 질문에 대답해줘\n"
-                "- 🎯 네가 궁금한 걸 계속 물어보면 더 깊이 설명해줘\n"
-                "- 📚 과학 원리를 쉽고 재미있게 알려줘\n\n"
-                "**🥰 또만나 놀이터 (옆 탭)에서는:**\n"
-                "- 📝 퀴즈도 풀고\n"
-                "- 💬 더 많이 질문하고\n"
-                "- 📖 나만의 과학동화도 만들 수 있어!\n\n"
-                "**💡 꿀팁:**\n"
-                "- '왜?', '어떻게?', '그럼 이건?'처럼 계속 물어봐도 돼!\n"
-                "- 🎤 말로 질문해도 되고, 글로 써도 돼!\n\n"
-                "자, 뭐가 궁금해? 😊"
+                "**국립어린이과학관**에 와줘서 정말 반가워! 🎉\n"
+                "**📅 AI 가이드 사용기간:** 5.22.(금) ~ 5.31.(일)\n\n"
+                "**🏙️ 과학관 안내** — 어디로 갈지 모르겠어? 무슨 프로그램이 있는지 궁금해? 아래 채팅에 물어봐 줘! 🎤 사이드바에서 말로도 물어볼 수 있어.\n\n"
+                "**🥰 또만나 놀이터** — 오늘 본 전시물, 다시 만나러 가볼까?! 재밌는 **퀴즈**도 풀고, 궁금한 거 **질문**도 하고, 인공지능이 만들어주는 신기한 **과학동화**까지 들어볼 수 있어~ 밑에 탭을 눌러봐!\n\n"
+                "**💡 팁:** 화면 왼쪽 위 **>>** 를 누르면 언어·모드 변경, 음성 질문, 설문조사까지 할 수 있어!"
             ),
             "청소년/성인": (
-                "과학이 기쁨이 되는 어린이과학관에 오신 여러분들 환영합니다! 🎉\n\n"
-                "저는 **국립어린이과학관 AI 가이드**예요. 궁금한 게 있으면 언제든 물어보세요!\n\n"
-                "**💬 과학관 안내 (🏙️ 과학관 안내 탭)**\n"
-                "- 🏢 층별 안내 및 전시관 소개\n"
-                "- 🎭 오늘의 프로그램 및 천체투영관 시간표\n"
-                "- 🎫 예약 방법, 관람료, 운영시간\n"
-                "- 🚇 오시는 길 (지하철/버스 경로 안내)\n"
-                "- 👶 연령별 맞춤 동선 추천\n\n"
-                "**🥰 또만나 모드 (🥰 또만나 놀이터 탭)**\n"
-                "- 📚 퀴즈타임: 체험한 놀이터의 과학원리 퀴즈\n"
-                "- 💬 궁금해요: 전시물에 대해 자유롭게 질문\n"
-                "- 📖 과학동화: 오늘 체험을 바탕으로 나만의 동화 생성 & 오디오북 변환\n\n"
-                "**� 사용 방법:**\n"
-                "- 아래 채팅창에 질문을 입력하거나\n"
-                "- 왼쪽 사이드바에서 🎤 음성으로 질문하세요\n"
-                "- 자주 묻는 질문 버튼을 눌러도 돼요!\n\n"
-                "편하게 질문해주세요~ 😊"
+                "과학이 기쁨이 되는 **국립어린이과학관**에 오신 걸 환영해요! 🎉\n"
+                "편리하고 풍성한 관람을 제공해 드리기 위해, 실시간 안내 AI 가이드 서비스를 시범 운영합니다."
+                "**📅 AI 가이드 시범운영 기간:** 5.22.(금) ~ 5.31.(일)\n\n"
+                "**🏙️ 과학관 안내** — 층별 안내·프로그램·관람료·예약·길찾기 등 방문 전후 궁금증을 답해드려요. "
+                "아래 채팅창에 입력하거나, 왼쪽 사이드바에서 🎤 음성으로도 질문할 수 있어요.\n\n"
+                "**🥰 또만나 놀이터** — 재미있었던 과학관 놀이터, 다시 즐겨볼까?! 과학전시물에 담긴 원리를 바탕으로 **퀴즈**를 풀고, 궁금한 내용은 **질문**하고, 인공지능이 실시간으로 만들어주는 신비한 **과학동화**까지 들어보자구요~ "
+                "밑에 탭을 전환해보세요!\n\n"
+                "** 팁:** 왼쪽 상단 **>>** 를 누르면 언어(Language)·모드 변경, 음성 질문, 설문조사까지 이용할 수 있어요!"
             )
         },
         "English": {
             "어린이": (
-                "Hi! I'm your **Science Friend AI**! 🤖✨\n\n"
-                "Did you see something cool? Got questions? Ask me!\n\n"
-                "**🔍 I can help you with:**\n"
-                "- 🎨 How exhibits work\n"
-                "- 🤔 Answering your 'why?' questions\n"
-                "- 🎯 Going deeper when you keep asking\n"
-                "- 📚 Explaining science in fun ways\n\n"
-                "**🥰 Again Zone (next tab):**\n"
-                "- 📝 Take quizzes\n"
-                "- 💬 Ask more questions\n"
-                "- 📖 Create your own science story!\n\n"
-                "**💡 Tips:**\n"
-                "- Keep asking 'why?', 'how?', 'what if?'\n"
-                "- 🎤 Use voice or type!\n\n"
-                "What are you curious about? 😊"
+                "Welcome to the **National Children's Science Center**! 🎉\n"
+                "**📅 AI Guide Period:** May 22 (Fri) ~ May 31 (Sun)\n\n"
+                "**🏙️ Museum Guide** — Don't know where to go? Wondering what's on today? Just ask me in the chat below! 🎤 You can also ask out loud using the sidebar.\n\n"
+                "**🥰 또만나 (See-You-Again) Zone** — Want to play with today's exhibits again?! Take fun **quizzes**, ask **questions** about anything you're curious about, and listen to magical AI-made **science stories**~ Tap the tab below!\n\n"
+                "**💡 Tip:** Tap **>>** on the top left to change language, ask by voice, and take a survey!"
             ),
             "청소년/성인": (
-                "Welcome to the National Children's Science Center! 🎉\n\n"
-                "I'm your **AI Guide**. Feel free to ask me anything!\n\n"
-                "**💬 Museum Guide (🏙️ Guide tab)**\n"
-                "- 🏢 Floor guide & exhibit info\n"
-                "- 🎭 Today's programs & planetarium schedule\n"
-                "- 🎫 Reservations, fees, hours\n"
-                "- 🚇 Directions (subway/bus routes)\n"
-                "- 👶 Age-appropriate tour routes\n\n"
-                "**🥰 Again Mode (🥰 Again Zone tab)**\n"
-                "- 📚 Quiz time: Science quizzes based on visited zones\n"
-                "- 💬 I'm curious: Ask questions about exhibits\n"
-                "- 📖 Science story: Generate personalized stories & audiobooks\n\n"
-                "** How to use:**\n"
-                "- Type in the chat below, or\n"
-                "- Use 🎤 voice input from the sidebar\n"
-                "- Click FAQ buttons!\n\n"
-                "Ask away! 😊"
+                "Welcome to the **National Children's Science Center**! 🎉\n"
+                "To provide you with a convenient and enriching visit, we are piloting a real-time AI guide service. "
+                "**📅 AI Guide Pilot Period:** May 22 (Fri) ~ May 31 (Sun)\n\n"
+                "**🏙️ Museum Guide** — I'll answer questions about floors, programs, fees, reservations, "
+                "and directions before or after your visit. Type in the chat below, or use 🎤 voice input "
+                "from the left sidebar.\n\n"
+                "**🥰 또만나 (See-You-Again) Zone** — Want to relive the fun?! Take **quizzes** on the "
+                "science behind the exhibits, ask **questions** about anything you're still curious about, "
+                "and listen to magical AI-generated **science stories** in real time~ Switch using the tab below!\n\n"
+                "**💡 Tip:** Tap **>>** on the top left to change Language·mode, ask by voice, and take a survey!"
             )
         },
-        "日本語": (
-            "国立こども科学館へようこそ！🎉\n\n"
-            "私は **AIガイド** です。何でも聞いてください！\n\n"
-            "**💬 科学館案内 (🏙️ 案内タブ)**\n"
-            "- 🏢 フロア案内・展示情報\n"
-            "- 🎭 本日のプログラム・プラネタリウム時間\n"
-            "- 🎫 予約方法・料金・営業時間\n"
-            "- 🚇 アクセス（地下鉄・バス）\n"
-            "- 👶 年齢別おすすめ動線\n\n"
-            "**🥰 またねモード (🥰 またねゾーンタブ)**\n"
-            "- 📚 クイズタイム: 体験したゾーンの科学クイズ\n"
-            "- 💬 ききたい: 展示について自由に質問\n"
-            "- 📖 かがくどうわ: 今日の体験をもとにオリジナル物語＆オーディオブック作成\n\n"
-            "**📝 使い方:**\n"
-            "- 下のチャットで質問、または\n"
-            "- サイドバーで 🎤 音声質問\n"
-            "- よくある質問ボタンをクリック！\n\n"
-            "お気軽にどうぞ！😊"
-        ),
-        "中文": (
-            "欢迎来到国立儿童科学馆！🎉\n\n"
-            "我是你的 **AI 导览**。有问题随时问我！\n\n"
-            "**💬 科学馆导览 (🏙️ 导览标签)**\n"
-            "- 🏢 楼层导览·展馆介绍\n"
-            "- 🎭 今日节目·天文馆时间表\n"
-            "- 🎫 预约方法·门票·营业时间\n"
-            "- 🚇 交通指南（地铁/公交）\n"
-            "- 👶 年龄推荐路线\n\n"
-            "**🥰 再次乐园模式 (🥰 再次乐园标签)**\n"
-            "- 📚 测验时间: 基于参观区域的科学测验\n"
-            "- 💬 我很好奇: 自由提问展品相关问题\n"
-            "- 📖 科学故事: 根据今日体验生成专属故事和有声书\n\n"
-            "**📝 使用方法:**\n"
-            "- 在下方聊天框输入问题，或\n"
-            "- 在侧边栏使用 🎤 语音提问\n"
-            "- 点击常见问题按钮！\n\n"
-            "欢迎提问！😊"
-        ),
+        "日本語": {
+            "어린이": (
+                "**国立こども科学館** へようこそ！🎉\n"
+                "**📅 AIガイド利用期間：** 5月22日(金) 〜 5月31日(日)\n\n"
+                "**🏙️ 科学館案内** — どこに行こうか迷ってる？今日のプログラムが知りたい？下のチャットで聞いてみてね！"
+                "🎤 サイドバーから声でも聞けるよ。\n\n"
+                "**🥰 또만나 (またね) ゾーン** — 今日見た展示、もう一度遊びに行こうよ！楽しい **クイズ** に答えて、"
+                "気になることを **質問** して、AIが作る不思議な **サイエンス童話** まで聞いてみよう〜 下のタブを押してみてね！\n\n"
+                "** ヒント：** 画面左上の **>>** を押すと、言語変更・音声質問・アンケートができるよ！"
+            ),
+            "청소년/성인": (
+                "**国立こども科学館** へようこそ！🎉\n"
+                "便利で充実した見学を提供するため、リアルタイム案内AIガイドサービスを試験運用しています。"
+                "**📅 AIガイド試験運用期間：** 5月22日(金) 〜 5月31日(日)\n\n"
+                "**🏙️ 科学館案内** — フロア案内・プログラム・料金・予約・アクセスなど、来館前後の疑問にお答えします。"
+                "下のチャットに入力、または左サイドバーから 🎤 音声でどうぞ。\n\n"
+                "**🥰 또만나 (またね) ゾーン** — 楽しかった科学館、もう一度楽しもう！展示に込められた科学原理をもとに "
+                "**クイズ** を解いて、気になることを **質問** して、AIがリアルタイムで作る不思議な **サイエンス童話** "
+                "まで聴いてみよう〜 下のタブで切り替えてみてね！\n\n"
+                "** ヒント：** 左上の **>>** を押すと、言語(Language)・モード変更、音声質問、アンケートができます！"
+            ),
+        },
+        "中文": {
+            "어린이": (
+                "欢迎来到 **国立儿童科学馆**！🎉\n"
+                "**📅 AI导览使用期间：** 5月22日(周五) 〜 5月31日(周日)\n\n"
+                "**🏙️ 科学馆导览** — 不知道去哪儿？想知道今天有什么节目？在下方聊天框问我吧！"
+                "🎤 也可以从侧边栏用语音问哦。\n\n"
+                "**🥰 또만나 (再见) 展区** — 今天看到的展品，再一起玩一次吧！来做有趣的 **测验**、"
+                "**提问** 感兴趣的内容、还能听AI做的奇妙 **科学故事** 哦~ 点点下面的标签试试！\n\n"
+                "**💡 提示：** 点击左上角的 **>>**，可以切换语言、语音提问和填写问卷哦！"
+            ),
+            "청소년/성인": (
+                "欢迎来到 **国立儿童科学馆**！🎉\n"
+                "为了提供您便捷丰富的参观体验，我们正在进行实时AI导览服务的试运行。"
+                "**📅 AI导览试运行期间：** 5月22日(周五) 〜 5月31日(周日)\n\n"
+                "**🏙️ 科学馆导览** — 楼层、节目、门票、预约、交通等参观前后的问题随时为你解答。"
+                "在下方聊天框输入，或在侧边栏使用 🎤 语音提问。\n\n"
+                "**🥰 또만나 (再见) 展区** — 想再次回味乐趣吗？！基于展品中蕴含的科学原理来做 **测验**、"
+                "自由 **提问** 感兴趣的内容、还能听到AI实时创作的奇妙 **科学故事** 哦~ 请切换下方标签试试！\n\n"
+                "**💡 提示：** 点击左上角的 **>>**，可以切换语言(Language)、模式、语音提问和填写问卷！"
+            ),
+        },
     }
     intro_dict = intro_enhanced.get(language_mode, intro_enhanced["한국어"])
     if isinstance(intro_dict, dict):
@@ -506,20 +790,24 @@ def main():
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["quick_floor"], key="quick_floor"):
-                st.session_state["pending_user_input"] = "층별 안내"
+                _queue_ga_event("quick_menu_click", {"category": "floor", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["floor"]
                 st.rerun()
         with c2:
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["quick_route"], key="quick_route"):
-                st.session_state["pending_user_input"] = "연령별 맞춤 동선 추천"
+                _queue_ga_event("quick_menu_click", {"category": "route", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["route"]
                 st.rerun()
         with c3:
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["quick_programs"], key="quick_programs"):
-                st.session_state["pending_user_input"] = "오늘의 프로그램"
+                _queue_ga_event("quick_menu_click", {"category": "programs", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["programs"]
                 st.session_state["pending_ui_program_buttons"] = True
                 st.rerun()
         with c4:
             if st.button(ui_text.get(language_mode, ui_text["한국어"])["quick_exhibits"], key="quick_exhibits"):
-                st.session_state["pending_user_input"] = "전시관 안내"
+                _queue_ga_event("quick_menu_click", {"category": "exhibits", "language": language_mode})
+                st.session_state["pending_user_input"] = faq_inputs["exhibits"]
                 st.rerun()
     
     # Tab navigation
@@ -527,6 +815,30 @@ def main():
         ui_text.get(language_mode, ui_text["한국어"])["tab_guide"],
         ui_text.get(language_mode, ui_text["한국어"])["tab_learning"],
     ])
+    
+    # Notify users to switch to guide tab when sidebar FAQ buttons are clicked
+    # Only switch when both flags are set (ensures it only triggers from sidebar buttons)
+    if st.session_state.get("switch_to_guide_tab") and st.session_state.get("pending_user_input"):
+        try:
+            st.toast("과학관 안내 탭에서 답변을 확인하세요!", icon="🔔")
+        except Exception:
+            pass
+        st.markdown("""
+        <script>
+            (function() {
+                try {
+                    var doc = window.parent.document;
+                    var tabs = doc.querySelectorAll('[role="tab"]');
+                    if (tabs && tabs.length >= 2) { tabs[0].click(); }
+                } catch(e) {}
+            })();
+        </script>
+        """, unsafe_allow_html=True)
+        del st.session_state["switch_to_guide_tab"]
+        try:
+            del st.session_state["pending_user_input"]
+        except Exception:
+            pass
 
     with tab1:
         system_prompt = get_dynamic_prompt(user_mode, language_mode)
@@ -567,6 +879,7 @@ def main():
             audio_bytes = st.session_state.tts_cache.get(cache_key)
             if audio_bytes:
                 if st.button(ui_text.get(language_mode, ui_text["한국어"])["tts_listen"], key=f"tts_play_inline_{cache_key}"):
+                    _queue_ga_event("tts_played", {"language": language_mode})
                     autoplay_audio(audio_bytes)
                 st.audio(audio_bytes, format="audio/mp3")
 
@@ -579,22 +892,59 @@ def main():
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
+                    # 디버그: 어시스턴트 답변에 KO 원문 / 역번역 캡션 (외국어 모드 전용)
+                    if msg["role"] == "assistant" and language_mode != "한국어" and msg.get("content"):
+                        if debug_show_ko and msg.get("ko_original"):
+                            st.caption(f"KO: {msg['ko_original']}")
+                        if debug_backtranslate:
+                            bt = _backtranslate_to_korean_cached(msg["content"], language_mode)
+                            if bt:
+                                st.caption(f"BT: {bt}")
+
+                    # 답변 품질 피드백 (👍/👎)
+                    if msg["role"] == "assistant" and not msg.get("feedback_given"):
+                        fb_cols = st.columns([1, 1, 10])
+                        with fb_cols[0]:
+                            if st.button("👍", key=f"fb_up_{i}_{msg.get('intent', 'unknown')}"):
+                                _queue_ga_event("answer_feedback", {
+                                    "feedback": "positive",
+                                    "intent": msg.get("intent", ""),
+                                    "answer_type": msg.get("answer_type", ""),
+                                    "language": language_mode
+                                })
+                                msg["feedback_given"] = True
+                                st.rerun()
+                        with fb_cols[1]:
+                            if st.button("👎", key=f"fb_down_{i}_{msg.get('intent', 'unknown')}"):
+                                _queue_ga_event("answer_feedback", {
+                                    "feedback": "negative",
+                                    "intent": msg.get("intent", ""),
+                                    "answer_type": msg.get("answer_type", ""),
+                                    "language": language_mode
+                                })
+                                msg["feedback_given"] = True
+                                st.rerun()
+
                     if msg.get("ui") == "program_buttons":
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
                             if st.button(ui_text.get(language_mode, ui_text["한국어"])["program_explain"], key=f"prog_explain_{i}"):
+                                _queue_ga_event("program_detail_click", {"category": "explanation", "language": language_mode})
                                 st.session_state["pending_user_input"] = "전시해설 자세히 알려줘"
                                 st.rerun()
                         with col2:
                             if st.button(ui_text.get(language_mode, ui_text["한국어"])["program_show"], key=f"prog_show_{i}"):
+                                _queue_ga_event("program_detail_click", {"category": "science_show", "language": language_mode})
                                 st.session_state["pending_user_input"] = "과학쇼 자세히 알려줘"
                                 st.rerun()
                         with col3:
                             if st.button(ui_text.get(language_mode, ui_text["한국어"])["program_planet"], key=f"prog_planet_{i}"):
+                                _queue_ga_event("program_detail_click", {"category": "planetarium", "language": language_mode})
                                 st.session_state["pending_user_input"] = "천체투영관 자세히 알려줘"
                                 st.rerun()
                         with col4:
                             if st.button(ui_text.get(language_mode, ui_text["한국어"])["program_light"], key=f"prog_light_{i}"):
+                                _queue_ga_event("program_detail_click", {"category": "light_zone", "language": language_mode})
                                 st.session_state["pending_user_input"] = "빛놀이터 자세히 알려줘"
                                 st.rerun()
 
@@ -637,7 +987,7 @@ def main():
                             if st.button(ui_text.get(language_mode, ui_text["한국어"])["tts_listen"], key=f"tts_play_msg_{i}_{cache_key}"):
                                 autoplay_audio(audio_bytes)
 
-        # Process pending user input from buttons
+        # Process pending user input from buttons or main chat input
         user_input = None
         if "pending_user_input" in st.session_state and st.session_state.get("pending_user_input"):
             user_input = st.session_state.get("pending_user_input")
@@ -649,6 +999,11 @@ def main():
                 st.markdown(user_input)
 
             intent = route_intent(user_input)
+            _track_ga_event("send_message", {
+                "intent": intent,
+                "language": language_mode,
+                "user_mode": user_mode
+            })
             lowered_input = user_input.lower()
             if any(token in lowered_input for token in ["예약", "예매", "방문신청", "방문 신청", "단체예약", "개인예약", "교육예약", "입장권", "qr", "정원", "1600"]):
                 st.session_state["pending_ui_reservation_links"] = True
@@ -656,9 +1011,28 @@ def main():
             with st.chat_message("assistant"):
                 if intent in ["notice", "basic"]:
                     # 규칙 기반 엔진 동작 (RAG/LLM 미사용, 속도 최적화)
+                    # answer_rule_based_localized: 정적 사전 번역 우선 → 폴백 LLM 번역
+                    _t0 = time.time()
                     with st.spinner(ui_text.get(language_mode, ui_text["한국어"])["spinner_rule"]):
-                        answer = answer_rule_based(intent, user_input, user_mode)
+                        answer, ko_original = answer_rule_based_localized(
+                            intent, user_input, user_mode, language_mode
+                        )
+                    log_monitoring(intent=intent, rule_based=True, latency_ms=(time.time()-_t0)*1000)
+                    _track_ga_event("answer_delivered", {
+                        "intent": intent,
+                        "answer_type": "rule_based",
+                        "language": language_mode,
+                        "user_mode": user_mode
+                    })
+                    if language_mode == "한국어":
+                        ko_original = ""
                     st.markdown(answer)
+                    if language_mode != "한국어" and debug_show_ko and ko_original:
+                        st.caption(f"KO: {ko_original}")
+                    if language_mode != "한국어" and debug_backtranslate:
+                        bt = _backtranslate_to_korean_cached(answer, language_mode)
+                        if bt:
+                            st.caption(f"BT: {bt}")
                     rule_sources = []
                     lowered = user_input.lower()
                     if intent == "notice":
@@ -673,10 +1047,11 @@ def main():
                         else:
                             rule_sources = [CSC_URLS.get("이용안내")]
                     rule_sources = [s for s in dict.fromkeys([s for s in rule_sources if s])]
-                    render_source_buttons(rule_sources)
+                    render_source_buttons(rule_sources, language_mode=language_mode)
                     render_tts_for_answer(answer)
                 else:
                     # LLM + RAG + Crawling 엔진 동작
+                    _t0 = time.time()
                     with st.spinner(ui_text.get(language_mode, ui_text["한국어"])['spinner_llm']):
                         if st.session_state.get("directions_origin"):
                             origin = st.session_state.get("directions_origin")
@@ -696,23 +1071,46 @@ def main():
                         
                         # RAG 컨텍스트를 시스템 메시지로 추가 (사용자 메시지와 분리)
                         config = {"configurable": {"thread_id": st.session_state.thread_id}}
-                        messages = [
-                            {"role": "system", "content": f"{system_prompt}\n\n[RAG 배경지식]\n{rag_context}"},
-                            {"role": "user", "content": user_input}
-                        ]
+                        # 외국어 모드에서 FAQ 트리거가 한국어일 경우에도 LLM이 반드시 대상 언어로 답하도록 강제 프리픽스 추가
+                        llm_user_input = user_input
+                        if language_mode != "한국어":
+                            _lang_override = {
+                                "English": "[REQUIRED OUTPUT LANGUAGE: English] You MUST answer ENTIRELY in English, even though the question above may be in Korean. Translate place names using the official glossary in the system prompt (e.g., AI놀이터 → AI Zone). Do NOT output Korean text.",
+                                "日本語": "[出力言語指定: 日本語] 上の質問が韓国語であっても、必ず日本語だけで答えてください。場所名はシステムプロンプトのグロッサリーに従い、「日本語名称 (English Official Name)」の形式で記してください（例: 考えるゾーン (Thinking Zone)）。韓国語文字をそのまま出力しないこと。",
+                                "中文": "[输出语言要求: 中文] 即使以上问题是韩语，你也必须完全用中文回答。地点名称请依照系统提示词中的词汇表，以“中文名称 (English Official Name)”的格式书写（例：思考区 (Thinking Zone)）。不要直接输出韩文。",
+                            }.get(language_mode, "")
+                            if _lang_override:
+                                llm_user_input = f"{user_input}\n\n---\n{_lang_override}"
+                        messages = [{"role": "system", "content": f"{system_prompt}\n\n[RAG 배경지식]\n{rag_context}"}]
+                        # 이전 대화 내용 포함 (최근 10개 메시지, user/assistant만)
+                        for hist_msg in st.session_state.messages[-10:]:
+                            if hist_msg["role"] in ("user", "assistant"):
+                                messages.append({"role": hist_msg["role"], "content": hist_msg["content"]})
+                        messages.append({"role": "user", "content": llm_user_input})
                         result = agent.invoke({"messages": messages}, config=config)
                         answer = result["messages"][-1].content
-                        
-                        # 디버깅 로그 수집 (RAG 검색 결과 포함)
-                        debug_info = f"=== RAG 검색 결과 (k=3) ===\n{rag_context}\n\n{'='*50}\n\n"
-                        for msg in result["messages"][:-1]:  # 마지막 답변 제외
-                            if hasattr(msg, 'pretty_repr'):
-                                debug_info += msg.pretty_repr() + "\n\n"
-                            elif hasattr(msg, 'content'):
-                                debug_info += str(msg.content) + "\n\n"
-                        
+                    log_monitoring(intent=intent, rule_based=False, latency_ms=(time.time()-_t0)*1000)
+                    _track_ga_event("answer_delivered", {
+                        "intent": intent,
+                        "answer_type": "llm_rag",
+                        "language": language_mode,
+                        "user_mode": user_mode
+                    })
+
+                    # 디버깅 로그 수집 (RAG 검색 결과 포함)
+                    debug_info = f"=== RAG 검색 결과 (k=3) ===\n{rag_context}\n\n{'='*50}\n\n"
+                    for msg in result["messages"][:-1]:  # 마지막 답변 제외
+                        if hasattr(msg, 'pretty_repr'):
+                            debug_info += msg.pretty_repr() + "\n\n"
+                        elif hasattr(msg, 'content'):
+                            debug_info += str(msg.content) + "\n\n"
+
                     st.markdown(answer)
-                    render_source_buttons(rag_sources)
+                    if language_mode != "한국어" and debug_backtranslate:
+                        bt = _backtranslate_to_korean_cached(answer, language_mode)
+                        if bt:
+                            st.caption(f"BT: {bt}")
+                    render_source_buttons(rag_sources, language_mode=language_mode)
                     render_tts_for_answer(answer)
                     
                     # 디버깅 정보 표시 (답변 뒤)
@@ -722,8 +1120,16 @@ def main():
                                 st.text(debug_info)
                         st.session_state.messages.append({"role": "debug", "content": debug_info})
 
-            assistant_msg = {"role": "assistant", "content": answer}
+            answer_type = "rule_based" if intent in ["notice", "basic"] else "llm_rag"
+            assistant_msg = {"role": "assistant", "content": answer, "intent": intent, "answer_type": answer_type}
             assistant_msg["tts_autoplayed"] = False
+            # 디버그용 KO 원문 캐시 (rule-based 경로에서만 채워짐)
+            if intent in ["notice", "basic"] and language_mode != "한국어":
+                try:
+                    if ko_original:
+                        assistant_msg["ko_original"] = ko_original
+                except NameError:
+                    pass
             if st.session_state.get("pending_ui_program_buttons"):
                 assistant_msg["ui"] = "program_buttons"
                 del st.session_state["pending_ui_program_buttons"]
@@ -762,7 +1168,10 @@ def main():
         )
     
     # Chat input at page bottom (outside tabs for stable positioning)
-    typed_input = st.chat_input(ui_text.get(language_mode, ui_text["한국어"])["chat_placeholder"])
+    typed_input = st.chat_input(
+        ui_text.get(language_mode, ui_text["한국어"])["chat_placeholder"],
+        key="main_chat_input"
+    )
     if typed_input and not st.session_state.get("pending_user_input"):
         st.session_state["pending_user_input"] = typed_input
         st.rerun()
