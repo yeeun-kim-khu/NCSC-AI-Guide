@@ -778,9 +778,9 @@ def main():
     }
     intro_dict = intro_enhanced.get(language_mode, intro_enhanced["한국어"])
     if isinstance(intro_dict, dict):
-        st.markdown(intro_dict.get(user_mode, intro_dict["청소년/성인"]))
+        st.markdown(intro_dict.get(user_mode, intro_dict["청소년/성인"]), unsafe_allow_html=True)
     else:
-        st.markdown(intro_dict)
+        st.markdown(intro_dict, unsafe_allow_html=True)
 
     if st.session_state.get("mode_language_changed"):
         st.info(ui_text.get(language_mode, ui_text["한국어"])["mode_lang_changed"])
@@ -823,18 +823,22 @@ def main():
             st.toast("과학관 안내 탭에서 답변을 확인하세요!", icon="🔔")
         except Exception:
             pass
-        st.markdown("""
-        <script>
-            (function() {
-                try {
-                    var doc = window.parent.document;
-                    var tabs = doc.querySelectorAll('[role="tab"]');
-                    if (tabs && tabs.length >= 2) { tabs[0].click(); }
-                } catch(e) {}
-            })();
-        </script>
-        """, unsafe_allow_html=True)
-        del st.session_state["switch_to_guide_tab"]
+        if st.session_state.get("switch_to_guide_tab"):
+            st.markdown("""
+            <script>
+                (function() {
+                    try {
+                        var doc = window.parent.document;
+                        var tabs = doc.querySelectorAll('[role="tab"]');
+                        if (tabs && tabs.length >= 2) { tabs[0].click(); }
+                    } catch(e) {}
+                })();
+            </script>
+            """, unsafe_allow_html=True)
+            try:
+                del st.session_state["switch_to_guide_tab"]
+            except Exception:
+                pass
         try:
             del st.session_state["pending_user_input"]
         except Exception:
@@ -903,27 +907,38 @@ def main():
 
                     # 답변 품질 피드백 (👍/👎)
                     if msg["role"] == "assistant" and not msg.get("feedback_given"):
-                        fb_cols = st.columns([1, 1, 10])
-                        with fb_cols[0]:
-                            if st.button("👍", key=f"fb_up_{i}_{msg.get('intent', 'unknown')}"):
-                                _queue_ga_event("answer_feedback", {
-                                    "feedback": "positive",
-                                    "intent": msg.get("intent", ""),
-                                    "answer_type": msg.get("answer_type", ""),
-                                    "language": language_mode
-                                })
-                                msg["feedback_given"] = True
-                                st.rerun()
-                        with fb_cols[1]:
-                            if st.button("👎", key=f"fb_down_{i}_{msg.get('intent', 'unknown')}"):
+                        fb_neg_key = f"fb_negative_{i}"
+                        if st.session_state.get(fb_neg_key):
+                            st.caption("어떤 문제가 있었나요?")
+                            opts = ["답변이 이상해요", "정보가 틀렸어요", "너무 길어요", "기타"]
+                            selected = st.radio("선택", opts, key=f"fb_opts_{i}", horizontal=True, label_visibility="collapsed")
+                            if st.button("제출", key=f"fb_submit_{i}"):
                                 _queue_ga_event("answer_feedback", {
                                     "feedback": "negative",
+                                    "reason": selected,
                                     "intent": msg.get("intent", ""),
                                     "answer_type": msg.get("answer_type", ""),
                                     "language": language_mode
                                 })
                                 msg["feedback_given"] = True
+                                del st.session_state[fb_neg_key]
                                 st.rerun()
+                        else:
+                            fb_cols = st.columns([1, 1])
+                            with fb_cols[0]:
+                                if st.button("�", key=f"fb_up_{i}_{msg.get('intent', 'unknown')}"):
+                                    _queue_ga_event("answer_feedback", {
+                                        "feedback": "positive",
+                                        "intent": msg.get("intent", ""),
+                                        "answer_type": msg.get("answer_type", ""),
+                                        "language": language_mode
+                                    })
+                                    msg["feedback_given"] = True
+                                    st.rerun()
+                            with fb_cols[1]:
+                                if st.button("👎", key=f"fb_down_{i}_{msg.get('intent', 'unknown')}"):
+                                    st.session_state[fb_neg_key] = True
+                                    st.rerun()
 
                     if msg.get("ui") == "program_buttons":
                         col1, col2, col3, col4 = st.columns(4)
