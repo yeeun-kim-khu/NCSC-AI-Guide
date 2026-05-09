@@ -671,14 +671,12 @@ def main():
 
         if st.button(t("refresh"), use_container_width=True, type="primary"):
             _queue_ga_event("chat_reset", {"language": language_mode, "user_mode": user_mode})
-            st.session_state.messages = []
-            st.session_state.thread_id = uuid.uuid4().hex
-            st.session_state.debug_logs = []
-            if "tts_cache" in st.session_state:
-                del st.session_state["tts_cache"]
+            # 세션 스테이트 전체 초기화
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
             st.rerun()
 
-        if user_mode == "어린이":
+        if user_mode == "":
             render_children_feedback(language_mode, user_mode)
         else:
             render_parent_feedback(language_mode, user_mode)
