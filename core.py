@@ -19,6 +19,9 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
+# 정적 사전 번역 (4개 언어 핵심 FAQ) — LLM 번역 우회용
+from static_translations import get_static_answer, get_operating_hours_text
+
 # SSL 경고 무시
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -91,48 +94,91 @@ STATIC_EXHIBIT_INFO = {
 # ============================================================================
 
 def route_intent(text: str) -> str:
-    """사용자 질문의 의도를 파악하여 라우팅"""
+    """사용자 질문의 의도를 파악하여 라우팅.
+
+    반환 값:
+    - "notice": 공지사항 조회 (크롤링 + 텍스트 가공)
+    - "basic": 정적 FAQ (answer_rule_based 의 정형 답변)
+    - "llm_agent": LangGraph ReAct 에이전트 (RAG + 도구 호출 필요한 동적 질의)
+    """
     lowered = text.lower().strip()
 
+    # 길찾기 2단계: 이전 답변이 출발지를 물어본 상태
     if st.session_state.get("awaiting_directions_origin") and lowered:
         st.session_state["awaiting_directions_origin"] = False
         st.session_state["directions_origin"] = text.strip()
-        return "llm_agent"
+        return "llm_agent"  # search_directions 툴 호출 필요
+
+    # 공지사항 → 전용 크롤러 경로
     if any(token in lowered for token in ["공지", "공지사항", "알림"]):
         return "notice"
-    if ("집" in lowered or "우리집" in lowered or "집에서" in lowered) and any(token in lowered for token in ["어떻게 가", "가는", "가야", "가려고", "길", "오려", "가고"]):
+
+    # ── 동적 질의 (LLM 에이전트로 보내야 하는 케이스) ────────────────────────
+    # 1) 길찾기에 출발지가 명시 → search_directions 툴 필요
+    has_origin = bool(re.search(r"(에서|출발|출발지|역에서|집에서)", text)) or bool(re.search(r"[가-힣A-Za-z0-9]{2,}역", text))
+    if has_origin and any(token in lowered for token in ["가", "길", "오", "교통", "어떻게"]):
         return "llm_agent"
-    if any(token in lowered for token in ["오늘의 프로그램", "오늘 프로그램"]):
+
+    # 2) 특정 날짜 휴관 여부 → check_museum_closed_date 툴 필요
+    if re.search(r"(\d+월\s*\d+일|\d{4}-\d{2}-\d{2}|내일|모레|이번\s*주|다음\s*주)", text) and any(
+        t in lowered for t in ["열", "휴관", "운영", "여나", "여는", "쉬"]
+    ):
+        return "llm_agent"
+
+    # 3) 천체투영관 영상/줄거리 자세히 → 동적 RAG 답변
+    if "천체투영관" in lowered and any(t in lowered for t in ["뭐", "내용", "줄거리", "어떤", "코코몽", "키츠", "다이노소어", "바니"]):
+        return "llm_agent"
+
+    # ── 정적 FAQ 키워드 (basic 라우팅) ───────────────────────────────────────
+    basic_keywords = [
+        # 층/시설
+        "층별", "1층", "2층", "층 안내", "게이트", "입구", "출구",
+        "시설", "편의시설", "의무실", "수유실", "유아휴게", "물품보관",
+        "보관함", "락커", "유모차", "휠체어", "대여",
+        "안내데스크", "매표소", "꿈트리", "휴게실", "영유아놀이터", "하늘마당", "옥상",
+        # 전시관/동선
+        "전시관", "놀이터 안내", "동선", "연령", "나이", "추천", "유아", "초등", "저학년", "고학년", "4~7",
+        # 프로그램/시간표
+        "오늘의 프로그램", "오늘 프로그램", "프로그램", "과학쇼", "전시해설",
+        "천체투영관 시간", "투영관 시간", "시간표", "상영", "회차", "빛놀이터",
+        # 예약
+        "예약", "예매", "방문신청", "방문 신청", "단체예약", "개인예약", "교육예약",
+        "모바일 qr", "입장권", "정원", "1600",
+        # 운영시간
+        "운영", "휴관", "몇 시", "마감", "여나", "닫나", "열어", "여는 시간", "운영시간",
+        # 가격
+        "관람료", "입장료", "요금", "가격", "얼마",
+        # 주차
+        "주차", "주차장",
+        # 길찾기 (출발지 없는 일반 질문 → directions 카테고리가 출발지 묻기)
+        "오시는길", "오는길", "교통", "길찾기", "주소", "위치", "어디",
+    ]
+    if any(token in lowered for token in basic_keywords):
         return "basic"
-    if any(token in lowered for token in ["층별", "1층", "2층", "층 안내", "동선", "연령", "나이"]):
-        return "llm_agent"
-    if any(token in lowered for token in ["오시는길", "오는길", "교통", "길찾기", "주소", "어떻게 가", "어디", "위치"]):
-        if re.search(r"(에서|출발|출발지|역에서)", text) or re.search(r"[가-힣A-Za-z0-9]{2,}역", text):
-            return "llm_agent"
-        return "llm_agent"
-    if any(token in lowered for token in ["운영", "시간", "휴관", "입장료", "관람료", "주차"]):
-        return "llm_agent"
-    if any(token in lowered for token in ["예약", "예매", "방문신청", "방문 신청", "단체예약", "개인예약", "교육예약", "모바일 qr", "입장권", "정원", "1600"]):
-        return "llm_agent"
-    if any(token in lowered for token in ["시설", "편의시설", "의무실", "수유실", "유아휴게", "물품보관", "보관함", "락커", "유모차", "휠체어", "대여", "안내데스크", "매표소", "꿈트리", "휴게실", "영유아놀이터", "하늘마당", "옥상", "시간표", "상영", "회차"]):
-        return "llm_agent"
+
+    # 자유 질문, 전시물 상세, 과학 원리 등 → LLM + RAG
     return "llm_agent"
 
 def classify_basic_category(message: str) -> str:
-    """기본 질문 카테고리 분류"""
+    """기본 질문 카테고리 분류.
+
+    우선순위: 구체적 키워드를 가진 카테고리가 앞에 와야 '얼마', '시간' 같은
+    범용 키워드로 잘못 분류되는 것을 막을 수 있다.
+    특히 parking 을 admission_fee 앞에 두어 "주차비 얼마?" → parking 으로 분류되게 한다.
+    """
     lowered = message.lower()
     rules = [
-        ("floor_guide",     ["층별", "층 안내", "1층", "2층", "게이트", "입구", "출구"]),
-        ("facility_amenities", ["시설", "편의시설", "의무실", "수유실", "유아휴게", "물품보관", "보관함", "락커", "유모차", "휠체어", "대여", "안내데스크", "매표소", "꿈트리", "휴게실", "영유아놀이터", "하늘마당", "옥상"]),
-        ("exhibit_guide",   ["전시관", "전시관 안내", "놀이터 안내", "ai놀이터", "행동놀이터", "관찰놀이터", "탐구놀이터", "생각놀이터", "빛놀이터"]),
-        ("route_by_age",    ["동선", "연령", "나이", "추천", "4~7", "유아", "초등", "저학년", "고학년"]),
-        ("today_programs",  ["오늘의 프로그램", "오늘 프로그램", "프로그램", "과학쇼", "전시해설", "천체투영관", "빛놀이터"]),
-        ("planetarium_timetable", ["천체투영관 시간표", "투영관 시간표", "시간표", "상영", "회차", "프로그램(투영관)", "코코몽", "키츠", "바니", "다이노"]),
         ("reservation_guide", ["예약", "예매", "방문신청", "방문 신청", "단체예약", "개인예약", "교육예약", "모바일 qr", "입장권", "정원", "1600"]),
-        ("operating_hours", ["운영", "시간", "휴관", "몇 시", "마감"]),
-        ("admission_fee",   ["관람료", "입장료", "요금", "가격", "얼마"]),
-        ("parking",         ["주차", "주차장"]),
-        ("directions",      ["오시는길", "오는길", "교통", "길찾기", "주소", "위치", "어떻게 가", "어디"]),
+        ("planetarium_timetable", ["천체투영관 시간표", "투영관 시간표", "천체투영관 시간", "투영관 시간", "상영", "회차", "프로그램(투영관)", "코코몽", "키츠", "바니", "다이노"]),
+        ("today_programs",  ["오늘의 프로그램", "오늘 프로그램", "오늘 뭐", "과학쇼", "전시해설", "오늘 해", "오늘의 행사"]),
+        ("parking",         ["주차", "주차장", "주차비", "주차료", "주차 요금", "주차 되", "주차되", "파킹", "parking", "car park"]),
+        ("admission_fee",   ["관람료", "입장료", "요금", "가격", "얼마", "얼만", "비용", "유료", "무료", "할인", "티켓값", "표값"]),
+        ("exhibit_guide",   ["전시관", "전시관 안내", "놀이터 안내", "ai놀이터", "행동놀이터", "관찰놀이터", "탐구놀이터", "생각놀이터", "빛놀이터"]),
+        ("directions",      ["오시는길", "오는길", "오시는 길", "오는 길", "교통", "길찾기", "길 찾", "주소", "위치", "어떻게 가", "어떻게 오", "어디에 있", "어디야", "가는 방법", "가는길"]),
+        ("facility_amenities", ["시설", "편의시설", "의무실", "수유실", "유아휴게", "물품보관", "보관함", "락커", "유모차", "휠체어", "대여", "안내데스크", "매표소", "꿈트리", "휴게실", "영유아놀이터", "하늘마당", "옥상", "화장실"]),
+        ("route_by_age",    ["동선", "연령별", "연령", "나이", "추천 코스", "추천 동선", "추천해", "4~7", "7세", "유아", "초등", "저학년", "고학년", "몇 살", "몇살"]),
+        ("floor_guide",     ["층별", "층 안내", "1층", "2층", "3층", "게이트", "입구", "출구", "어느 층", "무슨 층"]),
+        ("operating_hours", ["운영시간", "운영 시간", "운영", "휴관", "휴무", "몇 시", "몇시", "마감", "언제 열", "언제 닫", "여는 시간", "닫는 시간", "개관", "폐관", "여나요", "여나"]),
     ]
     for category, keywords in rules:
         if any(keyword in lowered for keyword in keywords):
@@ -260,8 +306,8 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
 
 - **AI놀이터(1층)**: AI 미션을 해결하며 인공지능을 쉽고 재미있게 체험하는 공간이에요.
 - **행동놀이터(1층)**: 몸을 움직이며 건강/운동 원리를 체험하는 활동형 전시관이에요.
-- **생각놀이터(1층)**: 어린이들의 생각을 키우는 전시관(2026년 5월 개관 예정)입니다.
-- **빛놀이터(2층)**: 빛/숲/생태 주제를 미디어 인터랙션으로 몰입 체험하는 공간이에요.
+- **생각놀이터(1층)**: 뇌의 역할과 원리를 알아보고, 나의 뇌 능력을 테스트하며 사고력을 키우는 전시관이에요.
+- **빛놀이터(2층)**: 인터랙션으로 만나는 온대림! 에코크리에이터가 되어 아름다운 미래의 자연을 만들어가는 몰입형 실감 미디어 체험관이에요.
 - **탐구놀이터(2층)**: 생활 속 도구·에너지·기계 원리를 직접 만지고 실험하며 탐구해요.
 - **관찰놀이터(2층)**: 공룡/화석/표본 등을 관찰하며 과학적 사고력을 키우는 공간이에요.
 
@@ -347,7 +393,7 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
   - 다양한 새들의 특징을 퀴즈로 알아봐요.
   - 장소: 1층 과학극장
   - 참여방법: 선착순 입장 및 관람
-  - 입장 안내: 35분부터 입장 가능 / 39분 59초에 입장 마감
+  - 입장 안내: 25분부터 입장 가능 / 29분 59초에 입장 마감
   - 진행 중에는 입장/퇴장 불가
 - **단체해설 「북적북적 과학관」** (개학기간 3~7월)
   - 단체 예약 프로그램(신청콕으로 예약)
@@ -376,7 +422,7 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
 
 ## 이용방법(중요)
 - 선착순 입장 및 관람
-- **35분부터 입장 가능**, **39분 59초에 입장 마감**
+- 과학쇼는 **25분부터 입장 가능**하고 **29분 59초에 입장 마감**이니 시간 여유를 두세요.
 - 원활한 진행을 위해 프로그램 진행 중에는 **입장/퇴장 불가**
 
 ## 프로그램 구성
@@ -413,23 +459,6 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
 
 원하시면 '오늘 천체투영관 시간' 또는 '천체투영관 예약 방법'이라고 물어보면 더 자세히 안내해드릴게요."""
 
-            if ("빛놀이터" in message) and ("자세" in message or "상세" in message):
-                return """빛놀이터 안내입니다. ✨ (포스터 기준)
-
-## 운영 기간
-- 2026.04.01 ~ 2026.04.30
-
-## 회차(예시)
-- 10:00 / 10:40 / 11:20
-- 12:00 / 14:00 / 14:40
-- 15:20 / 16:00 / 16:40
-
-## 빛놀이터 이용안내(요약)
-- 미디어 체험은 **회차별로 입장**할 수 있어요.
-- 입장/퇴장 동선이 따로 있을 수 있으니, **현장 안내 표지(입구/출구)**를 따라 이동해 주세요.
-
-※ 운영 회차/동선은 운영 상황에 따라 변동될 수 있어요."""
-
             science_show_times = ["11:40", "13:40"]
 
             explanation_times = []
@@ -459,13 +488,17 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
 ## 과학쇼 (1층 과학극장)
 - 오늘 프로그램: **{science_show_type}** ({month_label} 기준)
 - 시간: {", ".join(science_show_times)}
+- 참여: 선착순 입장, 정원 95명, 25분부터 입장 가능 / 29분 59초 마감
 
 ## 전시해설
 - 오늘 프로그램: **{explanation_type}** ({month_label} 기준)
 - 시간: {", ".join(explanation_times)}
+- 참여: 선착순 입장 및 관람(짹짹 새 탐험대는 25분부터 입장/29분 59초 마감), 헬로 다이노!는 자유 관람
 
 ## 천체투영관 (시간/프로그램)
 {planetarium_lines}
+- 회차별 정원: **65명**
+- 예약: 인터넷 사전예약 우선, 잔여석에 한해 현장 결제 가능
 
 원하시면 "과학쇼 자세히", "전시해설 자세히", "천체투영관 시간표"처럼 말해주면 안내 규정/입장방법까지 더 자세히 설명해줄게요."""
 
@@ -487,7 +520,7 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
   - 현장 판매: (3~6월/9~12월) 평일 50%, 주말 25% / (7~8월/1~2월) 평일 25%, 주말 25%
   - 단체: **사전예약 필수**(단체 관람 이용안내 참조)
 - **천체투영관**
-  - 인터넷 예매: **100% (사전예약 필수)**
+  - 인터넷 예매 우선 (잔여석에 한해 현장 결제 가능)
 
 ## 예약 가능 기간(개인/단체)
 - 예약 판매를 우선으로 하며, **잔여석에 한해 현장판매**를 진행합니다.
@@ -573,8 +606,74 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
             return f"{prefix}{exhibit_table}\n\n{planet_table}\n\n{notes}"
         elif category == "parking":
             if mode == "어린이":
-                return "주차는 여기 건물 안에는 따로 없어요.\n대중교통을 이용하거나, 근처 유료 주차장을 이용해야 해요.\n정확한 주차 안내는 방문 전에 공식 홈페이지에서 확인해줘!"
-            return "국립어린이과학관은 전용 주차장이 없습니다.\n대중교통 이용을 권장드리며, 차량 이용 시 인근 유료 주차장을 이용해 주세요.\n주차 관련 최신 안내는 공식 홈페이지(www.csc.go.kr)에서 확인하시거나 02-3668-1500으로 문의해 주세요."
+                return """🚗 주차 안내
+
+### 핵심만 먼저!
+- **국립어린이과학관 건물 안에는 주차장이 없어요.**
+- 그래서 **지하철이나 버스**로 오는 게 제일 편해요!
+- 차로 오게 되면 근처 유료 주차장을 써야 해요.
+
+### 🚇 지하철로 오는 방법
+- **4호선 혜화역 4번 출구** → 걸어서 약 10~15분
+  - 혜화역에서 나오면 창경궁 방향(북쪽)으로 쭉 걸어오면 돼요!
+- **1호선 종로5가역 2번 출구** → 걸어서 약 20분
+
+### 🚌 버스로 오는 방법
+- **창경궁 앞(홍화문)** 정류장에서 내려서 5분 정도 걸어오세요.
+- 지나가는 버스 번호(예): 101, 102, 104, 106, 107, 108, 140, 150, 160 등
+
+### 🅿️ 꼭 차로 와야 한다면
+- **창경궁 주차장**(가장 가까워요) — 창경궁 홍화문 바로 옆
+- **서울대학교병원 주차장** — 대학로 쪽
+- **종로구청 주차장** — 종로3가 근처
+- 주말이나 공휴일에는 주차장이 꽉 차 있을 수 있어요. 조금 일찍 오거나 대중교통을 추천해요!
+
+### ♿ 도움이 필요하다면
+- 혜화역 4번 출구에는 엘리베이터가 있어요.
+- 과학관 1층 안내데스크에서 **유모차(5대)**, **휠체어(2대)**를 빌릴 수 있어요. (신분증 꼭 챙겨오기!)
+
+### 📍 주소 & 연락처
+- **주소**: 서울특별시 종로구 창경궁로 215 (와룡동 2-1)
+- **전화**: 02-3668-3350
+
+⚠️ 주차/교통 안내는 바뀔 수 있으니, 출발 전에 공식 홈페이지(www.csc.go.kr)에서 한 번 더 확인해줘!"""
+
+            return """🚗 주차 안내
+
+### 핵심 안내
+- **국립어린이과학관은 전용 주차장이 없습니다.**
+- 차량으로 오시는 경우 인근 유료 주차장을 이용하셔야 하며, **가능하면 대중교통 이용을 권장드립니다.**
+
+### 🚇 지하철 (가장 빠르고 편리한 방법)
+- **4호선 혜화역 4번 출구** → 도보 약 10~15분
+  - 혜화역 4번 출구로 나와 창경궁로를 따라 북쪽(창경궁 방향)으로 직진하시면 됩니다.
+- **1호선 종로5가역 2번 출구** → 도보 약 20분
+
+### 🚌 버스
+- **창경궁 정문(홍화문)** 정류장 하차 후 도보 약 5분
+- 경유 노선(일부): 101, 102, 104, 106, 107, 108, 140, 150, 160 등
+- 버스 도착 정보는 서울 버스 앱이나 정류장 전광판에서 확인 가능합니다.
+
+### 🅿️ 차량 이용 시 (인근 유료 주차장)
+- **창경궁 주차장** (가장 가까움) — 창경궁 홍화문 옆
+  - 소액 단위 요금제 / **주말·공휴일에는 만차 가능성이 높습니다.**
+- **서울대학교병원 주차장** — 대학로 방면
+- **종로구청 주차장** — 종로3가 인근
+
+※ 주차 요금·운영시간은 주차장별로 상이하니 방문 전 확인을 권장드립니다.
+
+### ♿ 장애인·교통약자 편의
+- **혜화역 4번 출구**에는 엘리베이터가 설치되어 있습니다.
+- 창경궁 주차장에는 장애인 주차구역이 마련되어 있습니다.
+- 과학관 1층 안내데스크에서 **유모차(5대)** 및 **휠체어(2대)** 대여 가능 (신분증 지참).
+- 의무실은 1층에 있으며 일반의약품을 구비하고 있습니다.
+
+### 📍 주소 및 문의
+- **주소**: 서울특별시 종로구 창경궁로 215 (와룡동 2-1)
+- **대표전화**: 02-3668-3350
+- **공식 홈페이지**: https://www.csc.go.kr
+
+⚠️ 주차장 및 교통편 관련 최신 안내는 방문 전 공식 홈페이지 '오시는 길' 페이지에서 꼭 확인해 주세요."""
         elif category == "directions":
             has_origin = (
                 re.search(r"(에서|출발|출발지|역에서)", message)
@@ -588,12 +687,47 @@ def answer_rule_based(intent: str, message: str, mode: str) -> str:
                 return "출발지를 알려주시면(예: 강남역/잠실/OO구) 그 기준으로 가장 쉬운 경로를 안내해드릴게요."
 
             base = STATIC_FAQ.get("교통안내", "")
-            verify = "\n\n오시는 길은 노선/출입구 변경이 있을 수 있어 정확성이 중요합니다.\n공식 홈페이지(www.csc.go.kr) '오시는 길' 페이지를 기준으로 확인해 주세요.\n추가로 02-3668-1500으로 문의하시면 가장 정확합니다."
+            verify = "\n\n정확한 실시간 길 안내는 네이버지도나 카카오맵 같은 대중교통 앱을 이용해주세요!"
             if mode == "어린이":
                 return (base or "오시는 길을 알려드릴게요!") + verify
             return (base or "오시는 길 안내입니다.") + verify
             
     return ""
+
+
+def answer_rule_based_localized(intent: str, message: str, mode: str, language: str) -> tuple[str, str]:
+    """규칙 기반 답변을 사용자 언어로 반환.
+
+    반환: (answer_in_target_language, ko_original)
+
+    동작:
+    1) 한국어 원문은 항상 answer_rule_based 로 생성
+    2) language == "한국어" → 그대로 반환
+    3) basic intent + 정적 번역 보유 → static_translations 즉시 사용 (LLM 우회)
+    4) operating_hours → 동적 status 부분만 매핑 후 템플릿 주입
+    5) 정적 번역 미보유 → translate_answer_cached (LLM, 24h 캐시) 폴백
+    """
+    ko_answer = answer_rule_based(intent, message, mode)
+    if not ko_answer:
+        return "", ""
+
+    if language == "한국어":
+        return ko_answer, ko_answer
+
+    if intent == "basic":
+        category = classify_basic_category(message)
+        if category == "operating_hours":
+            ko_status = get_today_status()
+            translated = get_operating_hours_text(language, mode, ko_status)
+            if translated:
+                return translated, ko_answer
+        else:
+            static = get_static_answer(category, language, mode)
+            if static:
+                return static, ko_answer
+
+    translated = translate_answer_cached(ko_answer, language)
+    return translated, ko_answer
 
 # ============================================================================
 # RAG SYSTEM - Vector DB 및 데이터 로딩
@@ -670,12 +804,16 @@ def load_csv_data():
                 zone_name = os.path.splitext(os.path.basename(csv_file))[0]
                 if "AI놀이터" in csv_file:
                     zone_name = "AI놀이터"
-                elif "탐구놀이터" in csv_file:
+                elif "탐구놀이터" in csv_file or "탐구놀이터널" in csv_file:
                     zone_name = "탐구놀이터"
                 elif "관찰놀이터" in csv_file:
                     zone_name = "관찰놀이터"
                 elif "행동놀이터" in csv_file:
                     zone_name = "행동놀이터"
+                elif "생각놀이터" in csv_file:
+                    zone_name = "생각놀이터"
+                elif "빛놀이터" in csv_file:
+                    zone_name = "빛놀이터"
                 
                 text = f"[{zone_name}] {title}\nCategory: {category}\nContent: {content}\nDetails: {detail}"
                 metadata = {
@@ -696,17 +834,100 @@ def load_csv_data():
     return docs
 
 
+PLANETARIUM_VIDEO_INFO = {
+    "코코몽 우주탐험": {
+        "themes": "토성, 위성 타이탄, 태양계 행성, 우주여행, 모험",
+        "fulldomedb_url": "https://www.fddb.org/fulldome-shows/cocomong-space-adventure/",
+    },
+    "길냥이 키츠 슈퍼문 대모험": {
+        "themes": "달, 슈퍼문, 아폴로 미션, 달 기지, 미래 우주 탐사",
+        "fulldomedb_url": "https://www.fddb.org/",
+    },
+    "바니 앤 비니": {
+        "themes": "바다 생태계, 별과 별자리, 해양 생물, 자연의 신비",
+        "fulldomedb_url": "https://www.fddb.org/",
+    },
+    "다이노소어": {
+        "themes": "공룡, 중생대, 시간여행, 멸종, 지구의 역사",
+        "fulldomedb_url": "https://www.fddb.org/",
+    },
+    "길냥이 키츠 우주정거장의 비밀": {
+        "themes": "국제우주정거장(ISS), 무중력, 인공지능(A.I.), 우주생활",
+        "fulldomedb_url": "https://www.fddb.org/",
+    },
+}
+
+
+def _load_planetarium_videos():
+    """천체투영관 CSV에서 상영 영상 5개를 표준 row 형식으로 반환"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, "data")
+    csv_path = os.path.join(data_dir, "천체투영관.csv")
+    if not os.path.exists(csv_path):
+        return []
+
+    df = None
+    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+        try:
+            df = pd.read_csv(csv_path, encoding=enc)
+            break
+        except Exception:
+            continue
+    if df is None:
+        return []
+
+    df.columns = [str(c).strip() for c in df.columns]
+    rows = []
+    seen_titles = set()
+    for _, r in df.iterrows():
+        cat = str(r.get("category", "")).strip()
+        if not cat.startswith("프로그램_"):
+            continue
+        answer = str(r.get("answer", "")).strip()
+        title = None
+        for video_title in PLANETARIUM_VIDEO_INFO.keys():
+            # 1. answer에 완전한 영상 제목이 포함되는지 확인
+            if video_title in answer:
+                title = video_title
+                break
+            # 2. category에서 '프로그램_' 제거 후 비교 (예: "프로그램_코코몽" → "코코몽")
+            cat_clean = cat.replace("프로그램_", "").replace("_", "")
+            # video_title에서 공백 제거 (예: "코코몽 우주탐험" → "코코몽우주탐험")
+            vt_no_space = video_title.replace(" ", "")
+            if cat_clean in vt_no_space or vt_no_space.startswith(cat_clean):
+                title = video_title
+                break
+        if not title or title in seen_titles:
+            continue
+        seen_titles.add(title)
+
+        info = PLANETARIUM_VIDEO_INFO.get(title, {})
+        rows.append({
+            "title": title,
+            "content": answer,
+            "detail": f"학습 주제: {info.get('themes', '')} | 참고: {info.get('fulldomedb_url', '')}",
+            "category": "상영영상",
+        })
+    return rows
+
+
 def load_zone_rows_from_csv(zone_name: str):
+    if zone_name == "천체투영관":
+        return _load_planetarium_videos()
+
     def load_csv_safe(path: str) -> pd.DataFrame:
         for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
             try:
-                return pd.read_csv(path, encoding=enc)
+                return pd.read_csv(path, encoding=enc, engine="python")
             except Exception:
                 continue
-        return pd.read_csv(path)
+        return pd.read_csv(path, encoding="utf-8", engine="python")
 
-    csv_files = glob.glob("data/*.csv")
-    target_files = [p for p in csv_files if zone_name in os.path.basename(p)]
+    # Use absolute path for Streamlit Cloud compatibility
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, "data")
+    csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
+    target_files = [p for p in csv_files if os.path.basename(p) == f"{zone_name}.csv"]
     if not target_files:
         return []
 
@@ -714,22 +935,12 @@ def load_zone_rows_from_csv(zone_name: str):
     df = load_csv_safe(path)
     df.columns = [str(c).strip() for c in df.columns]
 
-    expected_cols = {"title", "content", "detail", "category"}
-    has_expected = len(expected_cols.intersection(set(df.columns))) >= 2
-    has_unnamed = any(str(c).startswith("Unnamed") for c in df.columns)
-    if (not has_expected) and (has_unnamed or df.shape[1] >= 2):
-        try:
-            df.columns = [str(v).strip() for v in df.iloc[0].tolist()]
-            df = df.iloc[1:].reset_index(drop=True)
-            df.columns = [str(c).strip() for c in df.columns]
-        except Exception:
-            pass
-
+    # 먼저 한글/동의어 컬럼명을 표준 영어로 매핑 (has_expected 체크 전에 실행)
     rename_map = {}
     synonyms = {
         "title": ["title", "전시물명", "전시물", "전시명", "제목", "명칭", "이름"],
         "content": ["content", "내용", "설명", "전시내용", "본문"],
-        "detail": ["detail", "세부설명", "상세", "상세설명"],
+        "detail": ["detail", "세부 설명", "세부설명", "상세", "상세설명"],
         "category": ["category", "분류", "카테고리", "구분"],
     }
     cols_lower = {str(c).strip().lower(): str(c).strip() for c in df.columns}
@@ -746,6 +957,17 @@ def load_zone_rows_from_csv(zone_name: str):
             rename_map[found] = target
     if rename_map:
         df = df.rename(columns=rename_map)
+
+    expected_cols = {"title", "content", "detail", "category"}
+    has_expected = len(expected_cols.intersection(set(df.columns))) >= 2
+    has_unnamed = any(str(c).startswith("Unnamed") for c in df.columns)
+    if (not has_expected) and (has_unnamed or df.shape[1] >= 2):
+        try:
+            df.columns = [str(v).strip() for v in df.iloc[0].tolist()]
+            df = df.iloc[1:].reset_index(drop=True)
+            df.columns = [str(c).strip() for c in df.columns]
+        except Exception:
+            pass
 
     rows = []
     for _, r in df.iterrows():
@@ -960,49 +1182,11 @@ def check_museum_closed_date(date_str: str) -> str:
     
     return f"Observation: {date_display}({weekday_kr}요일)은 정상 운영일입니다."
 
-@tool
-def search_directions(origin: str, destination: str = "국립어린이과학관") -> str:
-    """
-    출발지에서 목적지까지의 대중교통 경로를 검색합니다.
-    
-    [언제 사용하는가]
-    - 사용자가 "어떻게 가?", "길 알려줘", "교통편" 같은 질문을 할 때
-    - 출발지와 목적지가 명확할 때만 사용
-    
-    [입력 형식]
-    - origin: 출발지 (예: "강남역", "잠실", "종로구")
-    - destination: 목적지 (기본값: "국립어린이과학관")
-    
-    [무엇을 반환하는가]
-    - 지하철/버스 경로, 소요시간, 환승 정보
-    """
-    try:
-        # 네이버 지도 검색 URL 생성
-        search_query = f"{origin}에서 {destination} 대중교통"
-        
-        # 웹 검색으로 경로 정보 찾기
-        import urllib.parse
-        encoded_query = urllib.parse.quote(search_query)
-        
-        # 간단한 안내 메시지 (실제 API 없이 일반적인 안내)
-        result = f"""Observation: {origin}에서 {destination}까지의 경로 안내
-
-정확한 실시간 경로는 다음 방법으로 확인하세요:
-1. 네이버 지도 앱/웹사이트에서 '{origin}'에서 '{destination}' 검색
-2. 카카오맵에서 '{origin}'에서 '{destination}' 검색
-3. 대중교통 앱 (지하철, 버스) 이용
-
-일반적인 안내:
-- {destination} 주소: 서울특별시 종로구 창경궁로 215
-- 가까운 지하철역: 4호선 혜화역 4번 출구 (도보 15분)
-- 대중교통 이용을 권장합니다
-
-※ 정확한 버스 노선, 소요시간, 환승 정보는 위 지도 앱에서 실시간으로 확인해주세요.
-※ 교통 상황에 따라 소요시간이 달라질 수 있습니다."""
-        
-        return result
-    except Exception as e:
-        return f"Observation: 경로 검색 중 오류가 발생했습니다: {str(e)}\n네이버 지도나 카카오맵에서 '{origin}'에서 '{destination}'을 직접 검색해주세요."
+# search_directions 도구 제거: LLM이 직접 출발지를 듣고 서울 지하철 노선도를 기반으로 경로를 안내하도록 변경
+# (기존 도구는 정적 템플릿만 반환하여 "네이버 지도에서 검색하세요" 같은 불친절한 답변을 유발함)
+# @tool
+# def search_directions(origin: str, destination: str = "국립어린이과학관") -> str:
+#     ...
 
 @tool
 def search_csc_live_info(keyword: str) -> str:
@@ -1264,6 +1448,73 @@ def _fetch_html_bytes(
     raise RuntimeError(str(last_err) if last_err else "unknown error")
 
 
+def _extract_notice_body_text(substance) -> str:
+    """공지 상세 본문 텍스트를 자손 노드 순회 방식으로 추출.
+
+    1) p/span/li 일괄 select() 대신 트리를 한 번만 순회 → 중첩 텍스트 중복 추출 방지
+    2) <br>는 줄바꿈으로 처리
+    3) div.txc-textbox(점선 강조 박스)는 📌 프리픽스로 강조
+    4) 블록 요소(p/li/div/h*) 경계마다 줄바꿈 추가
+    """
+    BLOCK_TAGS = {"p", "li", "div", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "blockquote", "pre"}
+    SKIP_TAGS = {"script", "style", "noscript"}
+
+    lines: list[str] = []
+    buf: list[str] = []
+
+    def flush(prefix: str = "") -> None:
+        text = "".join(buf).strip()
+        buf.clear()
+        if text:
+            lines.append((prefix + text) if prefix else text)
+
+    def walk(node, in_textbox: bool = False) -> None:
+        from bs4 import NavigableString, Tag
+        for child in node.children:
+            if isinstance(child, NavigableString):
+                buf.append(str(child))
+                continue
+            if not isinstance(child, Tag):
+                continue
+            tag = (child.name or "").lower()
+            if tag in SKIP_TAGS:
+                continue
+            if tag == "br":
+                flush("📌 " if in_textbox else "")
+                continue
+            classes = child.get("class") or []
+            is_textbox = "txc-textbox" in classes
+            if is_textbox:
+                flush()
+                walk(child, in_textbox=True)
+                flush("📌 ")
+                continue
+            if tag in BLOCK_TAGS:
+                flush("📌 " if in_textbox else "")
+                walk(child, in_textbox=in_textbox)
+                flush("📌 " if in_textbox else "")
+            else:
+                walk(child, in_textbox=in_textbox)
+
+    walk(substance)
+    flush()
+
+    cleaned = []
+    prev_blank = False
+    for line in lines:
+        s = re.sub(r"\s+", " ", line).strip()
+        if not s:
+            if not prev_blank and cleaned:
+                cleaned.append("")
+                prev_blank = True
+            continue
+        cleaned.append(s)
+        prev_blank = False
+    merged = "\n".join(cleaned).strip()
+    merged = re.sub(r"\n{3,}", "\n\n", merged)
+    return merged
+
+
 def get_notice_detail_text(pkid: str) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
@@ -1289,15 +1540,7 @@ def get_notice_detail_text(pkid: str) -> str:
         if not substance:
             return f"공지 본문을 찾지 못했어요.\n- {url}"
 
-        lines = []
-        for el in substance.select("p, span, li"):
-            t = el.get_text(" ", strip=True)
-            if not t:
-                continue
-            lines.append(t)
-
-        merged = "\n".join(lines)
-        merged = re.sub(r"\n{3,}", "\n\n", merged).strip()
+        merged = _extract_notice_body_text(substance)
         if not merged:
             merged = substance.get_text("\n", strip=True)
 
@@ -1316,7 +1559,7 @@ def get_tools():
     """LangChain agent에서 사용할 도구 목록 반환"""
     return [
         check_museum_closed_date,
-        search_directions,
+        # search_directions,  # 제거: LLM이 직접 출발지를 듣고 경로를 안내하도록 변경
         search_csc_live_info,
         fetch_latest_notices,
     ]
@@ -1334,9 +1577,22 @@ def get_dynamic_prompt(mode: str, language: str = "한국어") -> str:
     
     language_instruction = {
         "한국어": "**중요: 모든 답변은 한국어로 작성하세요.**",
-        "English": "**IMPORTANT: Respond in English.**",
-        "日本語": "**重要：すべての回答は日本語で書いてください。**",
-        "中文": "**重要：所有回答必须用中文书写。**"
+        "English": (
+            "**CRITICAL LANGUAGE RULE: You MUST respond ENTIRELY in English, "
+            "even if the user's question, FAQ trigger text, or any retrieved RAG content is in Korean. "
+            "Translate all Korean content into English before answering. "
+            "NEVER output Korean text (except official place names inside parentheses as specified in the glossary below).**"
+        ),
+        "日本語": (
+            "**最重要言語ルール：ユーザーの質問やFAQトリガー、RAG検索結果が韓国語であっても、"
+            "必ず回答全体を日本語で書いてください。韓国語の内容は日本語に翻訳してから答えること。"
+            "韓国語をそのまま出力してはいけません（下記グロッサリーで指定された括弧内の英語公式名称のみ例外）。**"
+        ),
+        "中文": (
+            "**最重要语言规则：即使用户的问题、FAQ触发语或RAG检索内容是韩语，"
+            "你也必须完全用中文回答。所有韩语内容必须先翻译成中文。"
+            "绝对不要输出韩语原文（只有下方词汇表中指定的括号内英文官方名称可作为例外）。**"
+        ),
     }
 
     safety_instruction = {
@@ -1403,11 +1659,16 @@ def get_dynamic_prompt(mode: str, language: str = "한국어") -> str:
    - data/*.csv 파일의 정보가 가장 정확하고 최신입니다
    - CSV에 있는 정보와 다른 답변을 하지 마세요
 
+5. **주차 안내 (절대 규칙)**
+   - 국립어린이과학관은 **전용 주차장이 없습니다**.
+   - "주차 가능", "주차장 마련" 같은 말은 절대 하지 말 것. 자가용 이용 권장 금지.
+   - 대중교통 이용 안내 필수.
+
 === 국립어린이과학관 위치 정보 ===
 **주소**: 서울특별시 종로구 창경궁로 215 (와룡동 2-1)
 **가까운 지하철역**: 
-- 4호선 혜화역 4번 출구 (도보 15분)
-- 1호선 종로5가역 2번 출구 (도보 20분)
+- 4호선 혜화역 4번 출구 (도보 약 7분, 창경궁 방향)
+- 1호선 종로5가역 2번 출구 (도보 약 20분)
 **주요 버스 정류장**: 창경궁 앞 정류장
 
 === 길찾기 응대 규칙 ===
@@ -1423,14 +1684,40 @@ def get_dynamic_prompt(mode: str, language: str = "한국어") -> str:
 
 3. **경로 안내 원칙 (매우 중요!)**
    - **정확한 집 주소/상세 위치는 입력하지 말아달라**고 안내하세요
-   - **반드시 search_directions 도구를 사용**하여 실시간 경로를 검색하세요
+   - 사용자의 출발지를 확인하고, **서울 지하철 노선도를 기반으로 가장 적절한 경로를 직접 추천**하세요.
+     예) "강남역에서 2호선을 타고 을지로3가역에서 3호선으로 환승, 안국역에서 4호선으로 환승한 뒤 혜화역 4번 출구로 나와 창경궁 방향으로 도보 약 7분이면 돼요!"
    - 도구 없이 추측으로 버스 노선이나 소요시간을 말하지 마세요
-   - 도구 검색 결과를 바탕으로 정확하게 안내하세요
-   
+   - **자가용/주차 안내 금지** — 과학관에 전용 주차장이 없음을 반드시 안내
+
 4. **안내 방법**
-   - search_directions(origin="출발지", destination="국립어린이과학관") 도구를 먼저 호출
-   - 도구 결과에 나온 지하철/버스 노선, 소요시간을 그대로 전달
+   - 출발지를 먼저 확인한 후, 지하철 노선도를 기반으로 가장 적절한 역과 환승 정보를 안내하세요.
    - 여러 경로가 있으면 가장 빠른 경로 1-2개만 추천
+   - 마지막에 반드시 친절하게 다음 문구를 추가하세요:
+     "정확한 실시간 길 안내는 네이버지도나 카카오맵 같은 대중교통 앱을 이용해주세요!"
+
+=== OFFICIAL PLACE NAMES (MANDATORY GLOSSARY for non-Korean answers) ===
+FORMAT RULES by target language:
+- English mode: write ONLY the official English name (e.g., "Thinking Zone").
+- Japanese mode: write the Japanese name, then the official English name in parentheses, e.g., "考えるゾーン (Thinking Zone)".
+- Chinese mode: write the Chinese name, then the official English name in parentheses, e.g., "思考区 (Thinking Zone)".
+- NEVER use the raw Korean name (e.g., "생각놀이터") in non-Korean answers. Always replace with the target-language form.
+
+Mapping table (Korean → Japanese | Chinese | English Official — ALWAYS use English exactly as shown, never invent variants):
+- AI놀이터 → AIゾーン | AI区 | AI Zone
+- 행동놀이터 → アクティブゾーン | 行动区 | Activity Zone
+- 생각놀이터 → 考えるゾーン | 思考区 | Thinking Zone
+- 탐구놀이터 → 探究ゾーン | 探究区 | Discovery Zone
+- 관찰놀이터 → 観察ゾーン | 观察区 | Discovery Zone
+- 과학극장 → 科学劇場 | 科学剧场 | Science Theater
+- 빛놀이터 → ひかりシアター | 光影剧场 | Interactive Theater
+- 어린이교실 → こども教室 | 儿童教室 | Kids Classroom
+- 천체투영관 → プラネタリウム | 天体投影馆 | Planetarium
+- 휴게실 → 休憩室 | 休息室 | Lounge
+
+CRITICAL:
+- The English Official name is FIXED — do NOT invent "Thought Playground", "Observation Zone", "Light Zone", "Exploration Zone" or any other variant.
+- For Japanese/Chinese answers, always append the English Official name in parentheses right after the localized name.
+- For English answers, do NOT append anything extra — just the English Official name.
 """
     
     if mode == "어린이":
@@ -1473,16 +1760,59 @@ AI: "오~ 좋은 질문! 🌠 작은 운석은 가끔 떨어지는데, 대부분
     
     return base_prompt
 
-def render_source_buttons(sources: list):
-    """출처 버튼 렌더링"""
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def translate_answer_cached(text: str, target_language: str) -> str:
+    """규칙 기반 한국어 답변을 다른 언어로 번역 (캐시됨).
+    마크다운/이모지/표 구조는 유지한다."""
+    if not text or target_language == "한국어":
+        return text
+    lang_label = {
+        "English": "natural English",
+        "日本語": "natural Japanese (日本語)",
+        "中文": "natural Simplified Chinese (中文)",
+    }.get(target_language, "natural English")
+    try:
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        prompt = (
+            f"Translate the following Korean text into {lang_label}. "
+            f"Strictly preserve markdown formatting (headings, bullets, tables, bold), "
+            f"emojis, numbers, times, and proper nouns. Do NOT add explanations or notes. "
+            f"Output only the translated text.\n\n---\n{text}"
+        )
+        resp = llm.invoke(prompt)
+        out = (resp.content or "").strip()
+        return out or text
+    except Exception as e:
+        print(f"답변 번역 실패: {e}")
+        return text
+
+
+def render_source_buttons(sources: list, language_mode: str = "한국어", key_suffix: str = ""):
+    """출처(참고 홈페이지) 렌더링 — 기본은 접힘, '자세히 보기' 펼침 안에서 버튼 노출."""
     if not isinstance(sources, (list, tuple)):
         return
-    if sources:
-        st.markdown("**📚 참고 자료:**")
+    sources = [s for s in sources if s]
+    if not sources:
+        return
+
+    expander_label = {
+        "한국어": "📚 참고 홈페이지 자세히 보기",
+        "English": "📚 More info (reference websites)",
+        "日本語": "📚 参考サイトを詳しく見る",
+        "中文": "📚 查看参考网站",
+    }.get(language_mode, "📚 More info (reference websites)")
+
+    link_label = {
+        "한국어": "🔗 참고 홈페이지",
+        "English": "🔗 Reference site",
+        "日本語": "🔗 参考サイト",
+        "中文": "🔗 参考网站",
+    }.get(language_mode, "🔗 Reference site")
+
+    with st.expander(expander_label, expanded=False):
         for i, source in enumerate(sources[:5]):
-            if not source:
-                continue
             if isinstance(source, str) and source.startswith("http"):
-                st.markdown(f"[🔗 출처 {i+1}]({source})")
+                st.markdown(f"- [{link_label} {i+1}]({source})")
             else:
                 st.markdown(f"- `{source}`")

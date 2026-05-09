@@ -377,7 +377,7 @@ def main():
             "quick_programs": "🎭 Programs",
             "quick_exhibits": "🧩 Exhibits",
             "tab_guide": "🏙️ Guide",
-            "tab_learning": "🥰 Playground",
+            "tab_learning": "🥰 Again Zone",
             "chat_placeholder": "Type your question",
             "mode_lang_changed": "Your mode/language has changed. I will answer with the new settings from now on.",
             "program_explain": "Exhibit tour",
@@ -424,7 +424,7 @@ def main():
             "quick_programs": "🎭 プログラム",
             "quick_exhibits": "🧩 展示",
             "tab_guide": "🏙️ 科学館案内",
-            "tab_learning": "🥰 あそび",
+            "tab_learning": "🥰 またねゾーン",
             "chat_placeholder": "質問を入力してください",
             "mode_lang_changed": "モード/言語が変更されました。次の回答から新しい設定で案内します。",
             "program_explain": "展示解説",
@@ -471,7 +471,7 @@ def main():
             "quick_programs": "🎭 节目",
             "quick_exhibits": "🧩 展馆",
             "tab_guide": "🏙️ 参观导览",
-            "tab_learning": "🥰 游乐",
+            "tab_learning": "🥰 再次乐园",
             "chat_placeholder": "请输入你的问题",
             "mode_lang_changed": "模式/语言已更改。从下一次回答开始将使用新设置。",
             "program_explain": "展览讲解",
@@ -716,8 +716,8 @@ def main():
                 "Welcome to the **National Children's Science Center**! 🎉\n"
                 "**📅 AI Guide Period:** May 22 (Fri) ~ May 31 (Sun)\n\n"
                 "**🏙️ Museum Guide** — Don't know where to go? Wondering what's on today? Just ask me in the chat below! 🎤 You can also ask out loud using the sidebar.\n\n"
-                "**🥰 또만나 (See-You-Again) Zone** — Want to play with today's exhibits again?! Take fun **quizzes**, ask **questions** about anything you're curious about, and listen to magical AI-made **science stories**~ Tap the tab below!\n\n"
-                "**💡 Tip:** Tap **>>** on the top left to change language, ask by voice, and take a survey!"
+                "**🥰 Again Zone** — Want to play with today's exhibits again?! Take fun **quizzes** about the science, ask **questions** about anything you're curious about, and listen to magical AI-generated **science stories** in real time~ Switch using the tab below!\n\n"
+                "** Tip:** Tap **>>** on the top left to change Language·mode, ask by voice, and take a survey!"
             ),
             "청소년/성인": (
                 "Welcome to the **National Children's Science Center**! 🎉\n"
@@ -726,7 +726,7 @@ def main():
                 "**🏙️ Museum Guide** — I'll answer questions about floors, programs, fees, reservations, "
                 "and directions before or after your visit. Type in the chat below, or use 🎤 voice input "
                 "from the left sidebar.\n\n"
-                "**🥰 또만나 (See-You-Again) Zone** — Want to relive the fun?! Take **quizzes** on the "
+                "**🥰 Again Zone** — Want to relive the fun?! Take **quizzes** on the "
                 "science behind the exhibits, ask **questions** about anything you're still curious about, "
                 "and listen to magical AI-generated **science stories** in real time~ Switch using the tab below!\n\n"
                 "**💡 Tip:** Tap **>>** on the top left to change Language·mode, ask by voice, and take a survey!"
@@ -1183,13 +1183,15 @@ def main():
         )
     
     # Chat input at page bottom (outside tabs for stable positioning)
-    typed_input = st.chat_input(
-        ui_text.get(language_mode, ui_text["한국어"])["chat_placeholder"],
-        key="main_chat_input"
-    )
-    if typed_input and not st.session_state.get("pending_user_input"):
-        st.session_state["pending_user_input"] = typed_input
-        st.rerun()
+    if st.session_state.active_tab == "guide":
+        typed_input = st.chat_input(
+            ui_text.get(language_mode, ui_text["한국어"])["chat_placeholder"],
+            key="main_chat_input"
+        )
+        if typed_input and not st.session_state.get("pending_user_input"):
+            st.session_state["pending_user_input"] = typed_input
+    else:
+        typed_input = None
 
 if __name__ == "__main__":
     main()

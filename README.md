@@ -462,11 +462,31 @@ This project implements an AI-powered guide for the National Children's Science 
 
 > **Project Purpose**: Hybrid architecture combining rule-based system and LLM for science museum guidance chatbot  
 > **Key Contribution**: Pain Point-based design + Hallucination prevention guardrails + Child safety enhancement"
-> "# LLM-based Active Scientific Principle Exploration
 
-## Overview
+---
 
-This project implements an AI-powered guide for the National Children's Science Center (CSC) using an LLM-based active scientific principle exploration architecture. The system provides intelligent, context-aware responses to visitor queries through a sophisticated Thought-Action-Observation workflow.
+## 10. GA4 분석 및 데이터 폴더 가이드
 
-> **Project Purpose**: Hybrid architecture combining rule-based system and LLM for science museum guidance chatbot  
-> **Key Contribution**: Pain Point-based design + Hallucination prevention guardrails + Child safety enhancement"
+### Google Analytics 4 (GA4) 설정 및 이벤트 추적
+
+- **측정 ID**: `G-7VS14G0T7P`
+- **수집 원칙**: 개인정보(PII) 및 대화 내용(질문/답변 텍스트) 수집 금지
+- **수집 항목**: 질문 의도(intent), 답변 방식(rule_based/llm_rag), 언어, 사용자 모드, 버튼 클릭, 음성 입력, TTS 사용, 퀴즈/동화 생성 등
+- **보고서 확인**: 실시간 보고서(5~10분 지연), 이벤트 보고서, 탐색분석(맞춤 차트)
+
+자세한 설정 방법과 보고서 확인법, 결과보고 핵심 지표는 아래 문서 참조:
+
+- **[GA4_ANALYTICS_GUIDE.md](GA4_ANALYTICS_GUIDE.md)** — 웹스트림 설정, 이벤트 목록, 보고서 가이드, 문제해결 FAQ
+
+### 데이터 폴더 구조 (`data/` vs `data/pages/`)
+
+| 폴더               | 출처                      | 컬럼 구조                                                         | 주요 용도                                |
+| ------------------ | ------------------------- | ----------------------------------------------------------------- | ---------------------------------------- |
+| `data/*.csv`       | 전시물품 대장 (엑셀 변환) | `ID`, `분류`, `전시형태`, `작동방식`, `제목`, `내용`, `영문 내용` | RAG 벡터 DB, 또만나 놀이터 전시물 로드   |
+| `data/pages/*.csv` | 홈페이지 크롤링           | `page_key`, `url`, `block_type`, `order`, `title`, `content`      | 규칙 기반 답변, 홈페이지 콘텐츠 기반 FAQ |
+
+**중요**: 같은 이름의 파일이 존재하지만 내용과 용도가 **완전히 다름**. 중복 아님.
+
+자세한 파일별 용도, 코드에서의 활용처, 데이터 동기화 방법은 아래 문서 참조:
+
+- **[DATA_FOLDER_GUIDE.md](DATA_FOLDER_GUIDE.md)** — 폴더 구조, 파일별 용도, 중복 여부, 데이터 관리 체크리스트
