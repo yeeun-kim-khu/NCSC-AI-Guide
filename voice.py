@@ -93,17 +93,41 @@ def speech_to_text(audio_bytes):
         return None
 
 def text_to_speech(text, language="ko"):
-    """TTS 우선순위: edge-tts(빠름, 무료) → OpenAI 폴백."""
+    """TTS 우선순위: ElevenLabs(키 있을 때) → edge-tts → OpenAI 폴백."""
     text = preprocess_tts_text(text, language=language)
     if not text:
         return None
 
-    # 1) edge-tts (Microsoft Neural, 무료)
+    # 1) ElevenLabs (사용자 설정 음성)
+    eleven_key = os.environ.get("ELEVENLABS_API_KEY")
+    if (not eleven_key) and hasattr(st, "secrets"):
+        eleven_key = _safe_secret_get("ELEVENLABS_API_KEY", "")
+    if eleven_key:
+        voice_map = {
+            "ko": "uyVNoMrnUku1dZyVEXwD",
+            "en": "8LVfoRdkh4zgjr8v5ObE",
+            "ja": "3JDquces8E8bkmvbh6Bc",
+            "zh": "vZZLclMx4wouUtKBRfZn",
+        }
+        eleven_voice_id = os.environ.get("ELEVENLABS_VOICE_ID") or _safe_secret_get("ELEVENLABS_VOICE_ID", "") or voice_map.get(language, "uyVNoMrnUku1dZyVEXwD")
+        eleven_model_id = os.environ.get("ELEVENLABS_MODEL_ID") or _safe_secret_get("ELEVENLABS_MODEL_ID", "") or "eleven_multilingual_v2"
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{eleven_voice_id}"
+        headers = {"xi-api-key": eleven_key, "accept": "audio/mpeg", "content-type": "application/json"}
+        payload = {"text": text, "model_id": eleven_model_id, "voice_settings": {"stability": 0.45, "similarity_boost": 0.75, "style": 0.35, "use_speaker_boost": True}}
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+            print(f"[TTS] ElevenLabs error status={resp.status_code}")
+        except Exception as e:
+            print(f"[TTS] ElevenLabs exception: {e}")
+
+    # 2) edge-tts 폴백
     audio = _tts_edge(text, language=language)
     if audio:
         return audio
 
-    # 2) OpenAI 폴백
+    # 3) OpenAI 폴백
     try:
         voice_map = {"ko": "alloy", "en": "nova", "ja": "shimmer", "zh": "fable"}
         voice = voice_map.get(language, "alloy")
@@ -115,7 +139,18 @@ def text_to_speech(text, language="ko"):
 
 
 def get_tts_cache_namespace(language: str = "ko") -> str:
-    voice = EDGE_TTS_VOICES.get(language, "ko-KR-SunHiNeural")
+    eleven_key = os.environ.get("ELEVENLABS_API_KEY") or _safe_secret_get("ELEVENLABS_API_KEY", "")
+    if eleven_key:
+        voice_map = {
+            "ko": "uyVNoMrnUku1dZyVEXwD",
+            "en": "8LVfoRdkh4zgjr8v5ObE",
+            "ja": "3JDquces8E8bkmvbh6Bc",
+            "zh": "vZZLclMx4wouUtKBRfZn",
+        }
+        voice_id = os.environ.get("ELEVENLABS_VOICE_ID") or _safe_secret_get("ELEVENLABS_VOICE_ID", "") or voice_map.get(language, "uyVNoMrnUku1dZyVEXwD")
+        model_id = os.environ.get("ELEVENLABS_MODEL_ID") or _safe_secret_get("ELEVENLABS_MODEL_ID", "") or "eleven_multilingual_v2"
+        return f"elevenlabs::{model_id}::{voice_id}"
+    voice = EDGE_TTS_VOICES.get(language, "ko-KR-InJoonNeural")
     return f"edge-tts::{voice}"
 
 def get_language_code(language_mode):
@@ -145,6 +180,14 @@ def autoplay_audio(audio_bytes):
 def preprocess_tts_text(text: str, language: str = "ko") -> str:
     if not text:
         return text
+    # 마크다운 기호 제거 (edge-tts가 # ** * 등을 그대로 읽지 않도록)
+    text = re.sub(r'#{1,6}\s*', '', text)
+    text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+    text = re.sub(r'`[^`]*`', '', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
+    text = re.sub(r'^[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\n{2,}', ' ', text)
+    text = text.strip()
     if language != "ko":
         return text
 
