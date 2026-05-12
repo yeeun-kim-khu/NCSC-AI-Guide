@@ -11,3 +11,4 @@ chromadb>=0.4.22
 graphviz>=0.20.1
 langchain-chroma>=0.1.1
 audio-recorder-streamlit
+edge-tts>=6.1.9
