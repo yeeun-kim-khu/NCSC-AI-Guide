@@ -492,6 +492,20 @@ def main():
         layout="centered",
     )
 
+    st.markdown("""
+    <style>
+    [data-testid="stChatMessageAvatarAssistant"] {
+        display: none !important;
+        width: 0 !important;
+        min-width: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    [data-testid="stChatMessage"] { padding-top: 4px !important; padding-bottom: 4px !important; }
+    .stChatMessage { margin-top: 4px !important; margin-bottom: 4px !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
     if "OPENAI_API_KEY" not in os.environ:
         os.environ["OPENAI_API_KEY"] = st.secrets.get("OPENAI_API_KEY", "")
 
@@ -875,6 +889,10 @@ def main():
                     autoplay_audio(audio_bytes)
                 st.audio(audio_bytes, format="audio/mp3")
 
+        last_assistant_idx = max(
+            (j for j, m in enumerate(st.session_state.messages) if m["role"] == "assistant"),
+            default=-1
+        )
         for i, msg in enumerate(st.session_state.messages):
             if msg["role"] == "debug":
                 with st.expander(ui_text.get(language_mode, ui_text["한국어"])["debug_tool_calls"]):
@@ -916,7 +934,7 @@ def main():
                                 st.session_state["pending_user_input"] = "빛놀이터 자세히 알려줘"
                                 st.rerun()
 
-                    if enable_voice_output and msg["role"] == "assistant" and msg.get("content"):
+                    if enable_voice_output and msg["role"] == "assistant" and msg.get("content") and i == last_assistant_idx:
                         lang_code = get_language_code(language_mode)
                         tts_ns = get_tts_cache_namespace(language=lang_code)
                         tts_text = msg["content"]
@@ -1014,7 +1032,6 @@ def main():
                             rule_sources = [CSC_URLS.get("이용안내")]
                     rule_sources = [s for s in dict.fromkeys([s for s in rule_sources if s])]
                     render_source_buttons(rule_sources, language_mode=language_mode)
-                    render_tts_for_answer(answer)
                 else:
                     # LLM + RAG + Crawling 엔진 동작
                     _t0 = time.time()
@@ -1077,7 +1094,6 @@ def main():
                         if bt:
                             st.caption(f"BT: {bt}")
                     render_source_buttons(rag_sources, language_mode=language_mode)
-                    render_tts_for_answer(answer)
                     
                     # 디버깅 정보 표시 (답변 뒤)
                     if debug_info.strip():
@@ -1103,6 +1119,7 @@ def main():
                 assistant_msg["ui"] = "reservation_links"
                 del st.session_state["pending_ui_reservation_links"]
             st.session_state.messages.append(assistant_msg)
+            render_tts_for_answer(answer)
 
             
             # Voice output is rendered alongside assistant messages above (stable across reruns)
