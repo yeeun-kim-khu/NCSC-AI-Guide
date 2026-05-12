@@ -167,6 +167,11 @@ def classify_basic_category(message: str) -> str:
     특히 parking 을 admission_fee 앞에 두어 "주차비 얼마?" → parking 으로 분류되게 한다.
     """
     lowered = message.lower()
+
+    # 천체투영관 예약/예매 → planetarium_timetable (reservation_guide보다 우선)
+    if "천체투영관" in lowered and any(k in lowered for k in ["예약", "예매"]):
+        return "planetarium_timetable"
+
     rules = [
         ("reservation_guide", ["예약", "예매", "방문신청", "방문 신청", "단체예약", "개인예약", "교육예약", "모바일 qr", "입장권", "정원", "1600"]),
         ("planetarium_timetable", ["천체투영관 시간표", "투영관 시간표", "천체투영관 시간", "투영관 시간", "상영", "회차", "프로그램(투영관)", "코코몽", "키츠", "바니", "다이노"]),
